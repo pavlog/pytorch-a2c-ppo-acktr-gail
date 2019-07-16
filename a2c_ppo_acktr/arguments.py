@@ -36,7 +36,7 @@ def get_args():
         default=0.99,
         help='RMSprop optimizer apha (default: 0.99)')
     parser.add_argument(
-        '--gamma',
+        '--gamma', 
         type=float,
         default=0.99,
         help='discount factor for rewards (default: 0.99)')
@@ -127,6 +127,10 @@ def get_args():
         help='directory to save agent logs (default: /tmp/gym)')
     parser.add_argument(
         '--save-dir',
+        default='./trained_models/',
+        help='directory to save agent logs (default: ./trained_models/)')
+    parser.add_argument(
+        '--load-dir',
         default='./trained_models/',
         help='directory to save agent logs (default: ./trained_models/)')
     parser.add_argument(

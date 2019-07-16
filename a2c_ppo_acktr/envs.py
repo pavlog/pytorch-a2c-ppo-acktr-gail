@@ -29,13 +29,22 @@ except ImportError:
     pass
 
 
-def make_env(env_id, seed, rank, log_dir, allow_early_resets):
+def make_env(env_id, seed, rank, log_dir, allow_early_resets, video_dir,max_episode_steps=None,info_keywords=None,makeEnvFunc = None):
     def _thunk():
         if env_id.startswith("dm"):
             _, domain, task = env_id.split('.')
             env = dm_control2gym.make(domain_name=domain, task_name=task)
         else:
-            env = gym.make(env_id)
+            if makeEnvFunc:
+                env = makeEnvFunc(env_id)
+            else:
+                env = gym.make(env_id)
+
+        if max_episode_steps is not None:
+            env._max_episode_steps = max_episode_steps
+
+        if video_dir is not None:
+            env = gym.wrappers.Monitor(env, video_dir, force = True)
 
         is_atari = hasattr(gym.envs, 'atari') and isinstance(
             env.unwrapped, gym.envs.atari.atari_env.AtariEnv)
@@ -53,7 +62,8 @@ def make_env(env_id, seed, rank, log_dir, allow_early_resets):
             env = bench.Monitor(
                 env,
                 os.path.join(log_dir, str(rank)),
-                allow_early_resets=allow_early_resets)
+                allow_early_resets=allow_early_resets,
+                info_keywords=info_keywords)
 
         if is_atari:
             if len(env.observation_space.shape) == 3:
@@ -81,9 +91,15 @@ def make_vec_envs(env_name,
                   log_dir,
                   device,
                   allow_early_resets,
-                  num_frame_stack=None):
+                  num_frame_stack=None,
+                  video_dir=None,
+                  max_episode_steps=None,
+                  info_keywords=None,
+                  makeEnvFunc = None,
+                  normalizeOb = True,
+                  normalizeReturns = True):
     envs = [
-        make_env(env_name, seed, i, log_dir, allow_early_resets)
+        make_env(env_name, seed, i, log_dir, allow_early_resets,video_dir,max_episode_steps,info_keywords=info_keywords,makeEnvFunc=makeEnvFunc)
         for i in range(num_processes)
     ]
 
@@ -94,9 +110,9 @@ def make_vec_envs(env_name,
 
     if len(envs.observation_space.shape) == 1:
         if gamma is None:
-            envs = VecNormalize(envs, ret=False)
+            envs = VecNormalize(envs, ob=normalizeOb, ret=normalizeReturns)
         else:
-            envs = VecNormalize(envs, gamma=gamma)
+            envs = VecNormalize(envs, ob=normalizeOb, ret=normalizeReturns, gamma=gamma)
 
     envs = VecPyTorch(envs, device)
 
@@ -111,6 +127,7 @@ def make_vec_envs(env_name,
 # Checks whether done was caused my timit limits or not
 class TimeLimitMask(gym.Wrapper):
     def step(self, action):
+        #self.env.render()
         obs, rew, done, info = self.env.step(action)
         if done and self.env._max_episode_steps == self.env._elapsed_steps:
             info['bad_transition'] = True

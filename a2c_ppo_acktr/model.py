@@ -65,6 +65,20 @@ class Policy(nn.Module):
 
         return value, action, action_log_probs, rnn_hxs
 
+    def getActionsOnly(self, inputs, deterministic=False):
+        actor_features = self.base.forwardActor(inputs)
+        dist = self.dist(actor_features)
+
+        if deterministic:
+            action = dist.mode()
+        else:
+            action = dist.sample()
+        #print(action)
+        #print(action[0])
+        #print(a[1, 2])
+        #print(a[..., 1])
+        return action
+
     def get_value(self, inputs, rnn_hxs, masks):
         value, _, _ = self.base(inputs, rnn_hxs, masks)
         return value
@@ -80,14 +94,14 @@ class Policy(nn.Module):
 
 
 class NNBase(nn.Module):
-    def __init__(self, recurrent, recurrent_input_size, hidden_size):
+    def __init__(self, recurrent, recurrent_input_size, hidden_size,last_hidden_size):
         super(NNBase, self).__init__()
 
-        self._hidden_size = hidden_size
+        self._hidden_size = last_hidden_size
         self._recurrent = recurrent
 
         if recurrent:
-            self.gru = nn.GRU(recurrent_input_size, hidden_size)
+            self.gru = nn.GRU(recurrent_input_size, self._hidden_size)
             for name, param in self.gru.named_parameters():
                 if 'bias' in name:
                     nn.init.constant_(param, 0)
@@ -196,8 +210,8 @@ class CNNBase(NNBase):
 
 
 class MLPBase(NNBase):
-    def __init__(self, num_inputs, recurrent=False, hidden_size=64):
-        super(MLPBase, self).__init__(recurrent, num_inputs, hidden_size)
+    def __init__(self, num_inputs, recurrent=False, hidden_size=64, last_hidden_size=128,activation_layers_type="Tanh"):
+        super(MLPBase, self).__init__(recurrent, num_inputs, hidden_size,last_hidden_size)
 
         if recurrent:
             num_inputs = hidden_size
@@ -205,13 +219,61 @@ class MLPBase(NNBase):
         init_ = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.
                                constant_(x, 0), np.sqrt(2))
 
-        self.actor = nn.Sequential(
-            init_(nn.Linear(num_inputs, hidden_size)), nn.Tanh(),
-            init_(nn.Linear(hidden_size, hidden_size)), nn.Tanh())
+        if activation_layers_type=="Tanh":
+            self.actor = nn.Sequential(
+                init_(nn.Linear(num_inputs, hidden_size)), nn.Tanh(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.Tanh(),
+                #init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, last_hidden_size)), nn.Tanh())
+        elif activation_layers_type=="ReLu":
+            self.actor = nn.Sequential(
+                init_(nn.Linear(num_inputs, hidden_size)), nn.ReLU(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.ReLU())
+        elif activation_layers_type=="LeakyReLu":
+            self.actor = nn.Sequential(
+                init_(nn.Linear(num_inputs, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU()
+                )
+        elif activation_layers_type=="LeakyReLu2":
+            self.actor = nn.Sequential(
+                init_(nn.Linear(num_inputs, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU()
+                )
+        elif activation_layers_type=="LeakyReLu3":
+            self.actor = nn.Sequential(
+                init_(nn.Linear(num_inputs, hidden_size)), nn.Tanh(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.Tanh()
+                )
 
-        self.critic = nn.Sequential(
-            init_(nn.Linear(num_inputs, hidden_size)), nn.Tanh(),
-            init_(nn.Linear(hidden_size, hidden_size)), nn.Tanh())
+        if activation_layers_type=="Tanh":
+            self.critic = nn.Sequential(
+                init_(nn.Linear(num_inputs, hidden_size)), nn.Tanh(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.Tanh(),
+                #init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, last_hidden_size)), nn.Tanh())
+        elif activation_layers_type=="ReLu":
+            self.critic = nn.Sequential(
+                init_(nn.Linear(num_inputs, hidden_size)), nn.ReLU(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.ReLU())
+        elif activation_layers_type=="LeakyReLu":
+            self.critic = nn.Sequential(
+                init_(nn.Linear(num_inputs, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU()
+                )
+        elif activation_layers_type=="LeakyReLu2":
+            self.critic = nn.Sequential(
+                init_(nn.Linear(num_inputs, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU()
+                )
+        elif activation_layers_type=="LeakyReLu3":
+            self.critic = nn.Sequential(
+                init_(nn.Linear(num_inputs, hidden_size)), nn.Tanh(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.Tanh()
+                )
 
         self.critic_linear = init_(nn.Linear(hidden_size, 1))
 
@@ -227,3 +289,6 @@ class MLPBase(NNBase):
         hidden_actor = self.actor(x)
 
         return self.critic_linear(hidden_critic), hidden_actor, rnn_hxs
+
+    def forwardActor(self, inputs):
+        return self.actor(inputs)
