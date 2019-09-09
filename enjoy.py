@@ -11,9 +11,7 @@ robotlib = os.path.realpath("../../Robot/pyRobotLib")
 sys.path.insert(0, robotlib)
 import pyRobotLib
 
-from wrappers import MaxAndSkipEnv
-from wrappers import FrameStack
-
+from colorama import Fore, Back, Style 
 
 import roboschool
 import quadruppedEnv
@@ -31,9 +29,11 @@ import torch.optim as optim
 
 import numpy as np
 import torch
+import glm
 
 from a2c_ppo_acktr.envs import VecPyTorch, make_vec_envs
 from a2c_ppo_acktr.utils import get_render_func, get_vec_normalize
+
 
 from quadruppedEnv import settings
 quadruppedEnv.settings.robotNN = 1
@@ -43,6 +43,9 @@ quadruppedEnv.settings.history2Len = 0.0
 quadruppedEnv.settings.history3Len = 0.0
 
 sys.path.append('a2c_ppo_acktr')
+
+from quadruppedEnv import makeEnv
+#from makeEnv import make_env_with_best_settings
 
 parser = argparse.ArgumentParser(description='RL')
 parser.add_argument(
@@ -85,37 +88,11 @@ args.load_dir = "./trained_models/"+args.env_name+"/ppo/"
 #args.load_dir = "./trained_models/"+args.env_name+"/ppo copy 3/"
 #args.use_proper_time_limits = True
 
-env = gym.make(args.env_name)
-env.env.advancedLevel = False
-env.env.addObstacles = False
-env.env.ActionIsAngles = True
-env.env.ActionIsAnglesType = 2
-env.env.ActionsIsAdditive = False
-env.env.inputsSpace = 0
-env.env.actionsSpace = 0
+env = makeEnv.make_env_with_best_settings(args.env_name)
 
-
-env.env.spawnYawMultiplier = 0.0
-env.env.targetDesiredYawMultiplier = 0.0
-
-env.env.targetDesired_episode_from = 0
-env.env.targetDesired_episode_to = 10000
-env.env.targetDesired_angleFrom = np.pi/8.0
-env.env.targetDesired_angleTo = np.pi/4.0
-
-
-
-env.env.analyticReward = True
-env.env.analyticRewardType = 1
-
-env = MaxAndSkipEnv(env,8,False)
-env = FrameStack(env,2,True)
-
-
-hidden_size = 256
+hidden_size = 200
 
 loadFilename = os.path.join(args.load_dir, "{}_{}.pt".format(args.env_name,hidden_size))
-#loadFilename = os.path.join(args.load_dir, "{}_{}_best.pt".format(args.env_name,hidden_size))
 #loadFilename = "./trained_models/QuadruppedWalk-v1_best/ppo/QuadruppedWalk-v1QuadruppedWalk-v1_256_best_distance.pt"
 # We need to use the same statistics for normalization as used in training
 #actor_critic,_ = torch.load(loadFilename)
@@ -228,10 +205,11 @@ while True:
             episode_reward = 0
             cur_episode_steps = 0
 
-        #env.render()
+        env.render()
 
         if done:
-            print(infos)
+            print(Fore.WHITE,infos)
+            print(Style.RESET_ALL) 
             print(" reward mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
                         np.mean(episode_rewards),np.median(episode_rewards),
                         np.min(episode_rewards),np.max(episode_rewards)))

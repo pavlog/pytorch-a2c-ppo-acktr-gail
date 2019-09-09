@@ -16,8 +16,8 @@ quadruppedEnv.settings.history1Len = 0.0
 quadruppedEnv.settings.history2Len = 0.0
 quadruppedEnv.settings.history3Len = 0.0
 
-from wrappers import MaxAndSkipEnv
-from wrappers import FrameStack
+
+from colorama import Fore, Back, Style 
 
 
 import copy
@@ -27,7 +27,6 @@ import time
 from collections import deque
 import datetime
 
-import gym
 import numpy as np
 import torch
 import torch.nn as nn
@@ -44,6 +43,9 @@ from evaluation import evaluate
 from tensorboardX import SummaryWriter
 
 from gym.envs.registration import register
+import glm
+
+from quadruppedEnv import makeEnv
 
 
 class DefaultRewardsShaper:
@@ -59,40 +61,6 @@ class DefaultRewardsShaper:
             reward = np.clip(reward, -self.clip_value, self.clip_value)
         return reward
 
-frames_stack = 2
-max_and_skip = 8
-
-def make_env(envName):
-    env = gym.make(envName)
-    env.env.advancedLevel = True
-    env.env.addObstacles = False
-    env.env.ActionIsAngles = True
-    env.env.ActionIsAnglesType = 2
-    env.env.ActionsIsAdditive = False
-    env.env.inputsSpace = 0
-    env.env.actionsSpace = 0
-    env.env.simRewardOnly = False
-
-
-    env.env.targetDesired_episode_from = 0
-    env.env.targetDesired_episode_to = 10000
-    env.env.targetDesired_angleFrom = np.pi/8.0
-    env.env.targetDesired_angleTo = np.pi/4.0
-
-    env.env.spawnYawMultiplier = 0.4
-    env.env.targetDesiredYawMultiplier = 0.4
-    
-    env.env.analyticReward = True
-    env.env.analyticRewardType = 1
-
-
-    env = MaxAndSkipEnv(env,max_and_skip,False)
-    env = FrameStack(env,frames_stack,True)
-    return env
-
-#import multiprocessing
-#multiprocessing.set_start_method('spawn', True)
-
 def main():
 
     gettrace = getattr(sys, 'gettrace', None)
@@ -102,18 +70,19 @@ def main():
     args.algo = 'ppo'
     args.env_name = 'QuadruppedWalk-v1' #'RoboschoolAnt-v1' #'QuadruppedWalk-v1' #'RoboschoolAnt-v1' #'QuadruppedWalk-v1'
     args.use_gae = True
-    args.num_steps = 512
+    args.num_steps = 2048
     #args.num_processes = 4
     args.num_processes = 4
     if gettrace():
         args.num_processes = 1
-    args.lr = 0.0001
+    args.lr = 0.0003
     args.entropy_coef = 0.0
     args.value_loss_coef  =0.5
     args.ppo_epoch  = 4
     args.num_mini_batch = 4
     args.gamma =0.99
     args.gae_lambda =0.95
+    args.clip_param = 0.2
     args.use_linear_lr_decay = True
     args.use_proper_time_limits = True
     args.save_dir = "./trained_models/"+args.env_name+"/"
@@ -123,12 +92,13 @@ def main():
         args.save_dir = "./trained_models/"+args.env_name+"debug/"
         args.load_dir  = "./trained_models/"+args.env_name+"debug/"
         args.log_dir = "./logs/robot_d"
-    args.num_env_steps = 10000000
+    args.num_env_steps = 100000000
     args.log_interval = 10
     args.eval_interval = 2
-    args.hidden_size = 256 
-    args.last_hidden_size = 256
+    args.hidden_size =  200 
+    args.last_hidden_size = 200
     args.recurrent_policy = True
+    args.save_interval = 20
 
     reward_shaper = DefaultRewardsShaper(scale_value = 0.01)
 
@@ -155,7 +125,7 @@ def main():
                         args.gamma, None, device, False,
                         normalizeOb=False, normalizeReturns=False,
                         max_episode_steps=args.num_steps,
-                        makeEnvFunc=make_env,
+                        makeEnvFunc=makeEnv.make_env_with_best_settings,
                         num_frame_stack = 1,
                         info_keywords=('episode_steps','episode_reward','progress','servo','distToTarget',))
     #print(envs.observation_space.shape,envs.action_space)
@@ -183,6 +153,7 @@ def main():
     if os.path.isfile(load_path) and not loadPretrained:
         actor_critic, ob_rms = torch.load(load_path)
         actor_critic.eval()
+        print("NN loaded: ",load_path)
 
 
     maxReward = -10000.0
@@ -305,15 +276,15 @@ def main():
             '''
 
             for info in infos:
-                if 'episode_reward' in info.keys():
+                if 'reward' in info.keys():
                     episodeDone = True
                     i_episode+=1
-                    episode_rewards.append(info['episode_reward'])
-                    writer.add_scalar('reward/episode', info['episode_reward'],i_episode)
+                    episode_rewards.append(info['reward'])
+                    writer.add_scalar('reward/episode', info['reward'],i_episode)
                     #print("E:",i_episode," T:",info['episode_steps'], " R:", info['episode_reward'], " D:",info['distToTarget'])
-                if 'episode_steps' in info.keys():
-                    episode_steps.append(info['episode_steps'])
-                    writer.add_scalar('reward/steps', info['episode_steps'],i_episode)
+                if 'steps' in info.keys():
+                    episode_steps.append(info['steps'])
+                    writer.add_scalar('reward/steps', info['steps'],i_episode)
                 if 'alive' in info.keys():
                     episode_rewards_alive.append(info['alive'])
                     writer.add_scalar('reward/alive', info['alive'], i_episode)
@@ -331,31 +302,23 @@ def main():
             #    print(i_episode,"({:.1f}/{}/{:.2f}) ".format(episode_rewards[-1],episode_steps[-1],episode_dist_to_target[-1]),end='',flush=True)
 
             if episodeDone:
-                if len(episode_rewards) and episode_rewards[-1]>maxReward and j>args.log_interval:
-                    maxReward = episode_rewards[-1]
+                print("Mean Reward:",Fore.WHITE,np.mean(episode_rewards),Style.RESET_ALL," max reward:", maxReward)
+
+                if len(episode_rewards) and np.mean(episode_rewards)>maxReward and j>args.log_interval:
+                    maxReward = np.mean(episode_rewards)
 
                     bestFilename = os.path.join(save_path,"{}_{}_best.pt".format(args.env_name,args.hidden_size))
-                    print("Writing best reward:","({:.1f}/{}/{:.2f}) ".format(episode_rewards[-1],episode_steps[-1],episode_dist_to_target[-1]),bestFilename)
+                    print("Writing best reward:","({:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),bestFilename)
                     torch.save([
                         actor_critic,
                         getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
                     ], bestFilename)
 
-                if len(episode_dist_to_target) and episode_dist_to_target[-1]<minDistance and j>args.log_interval:
-                    minDistance = episode_dist_to_target[-1]
-
-                    bestFilename = os.path.join(save_path,"{}_{}_best_distance.pt".format(args.env_name,args.hidden_size))
-                    print("Writing best distance:","({:.1f}/{}/{:.2f}) ".format(episode_rewards[-1],episode_steps[-1],episode_dist_to_target[-1]),bestFilename)
-                    torch.save([
-                        actor_critic,
-                        getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
-                    ], bestFilename)
-
-                if len(episode_steps) and episode_steps[-1]>maxSteps and j>args.log_interval:
-                    maxSteps = episode_steps[-1]
+                if len(episode_steps) and np.mean(episode_steps)>maxSteps and j>args.log_interval:
+                    maxSteps = np.mean(episode_steps)
 
                     bestFilename = os.path.join(save_path, "{}_{}_best_steps.pt".format(args.env_name,args.hidden_size))
-                    print("Writing best steps:","({:.1f}/{}/{:.2f}) ".format(episode_rewards[-1],episode_steps[-1],episode_dist_to_target[-1]),bestFilename)
+                    print("Writing best steps:","({:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),bestFilename)
                     torch.save([
                         actor_critic,
                         getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
@@ -400,15 +363,14 @@ def main():
         rollouts.after_update()
 
         # save for every interval-th episode or for the last epoch
-        if (j % args.save_interval == 0
-                or j == num_updates - 1) and args.save_dir != "":
+        if (j % args.save_interval == 0 or j == num_updates - 1) and args.save_dir != "":
 
             fileName = os.path.join(save_path, "{}_{}.pt".format(args.env_name,args.hidden_size))
             torch.save([
                 actor_critic,
                 getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
             ], fileName)
-            print("Saved:",fileName)
+            print("Saved:",fileName, " cur avg rewards:",np.mean(episode_rewards))
 
             fileName = os.path.join(save_path, "{}_{}_actor.pt".format(args.env_name,args.hidden_size))
             torch.save(actor_critic.state_dict, fileName)
@@ -431,26 +393,28 @@ def main():
                         np.mean(episode_steps),np.median(episode_steps),
                         np.min(episode_steps),np.max(episode_steps)))
 
-            print(" alive mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                        np.mean(episode_rewards_alive),np.median(episode_rewards_alive),
-                        np.min(episode_rewards_alive),np.max(episode_rewards_alive)))
+            if len(episode_rewards_alive):
+                print(" alive mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
+                            np.mean(episode_rewards_alive),np.median(episode_rewards_alive),
+                            np.min(episode_rewards_alive),np.max(episode_rewards_alive)))
 
             print(" progress mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
                         np.mean(episode_rewards_progress),np.median(episode_rewards_progress),
                         np.min(episode_rewards_progress),np.max(episode_rewards_progress)))
 
-            print(" servo mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                        np.mean(episode_rewards_servo),np.median(episode_rewards_servo),
-                        np.min(episode_rewards_servo),np.max(episode_rewards_servo)))
+            if len(episode_rewards_servo):
+                print(" servo mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
+                            np.mean(episode_rewards_servo),np.median(episode_rewards_servo),
+                            np.min(episode_rewards_servo),np.max(episode_rewards_servo)))
 
-            print(" dist to target mean/median {:.3f}/{:.3f} min/max {:.3f}/{:.3f}".format(
-                        np.mean(episode_dist_to_target),np.median(episode_dist_to_target),
-                        np.min(episode_dist_to_target),np.max(episode_dist_to_target)))
+            if len(episode_dist_to_target):
+                print(" dist to target mean/median {:.3f}/{:.3f} min/max {:.3f}/{:.3f}".format(
+                                np.mean(episode_dist_to_target),np.median(episode_dist_to_target),
+                                np.min(episode_dist_to_target),np.max(episode_dist_to_target)))
 
-            print(" Reward/Steps {:.3f} Energy/Steps: {:.3f} Progress/Steps: {:.3f} entropy {:.1f} value_loss {:.5f} action_loss {:.5f}\n"
+            print(" Reward/Steps {:.3f} Progress/Steps: {:.3f} entropy {:.1f} value_loss {:.5f} action_loss {:.5f}\n"
                 .format(
                         np.mean(episode_rewards)/np.mean(episode_steps),
-                        np.mean(episode_rewards_servo)/np.mean(episode_steps),
                         np.mean(episode_rewards_progress)/np.mean(episode_steps),
                         dist_entropy, 
                         value_loss,

@@ -221,8 +221,8 @@ class MLPBase(NNBase):
 
         if activation_layers_type=="Tanh":
             self.actor = nn.Sequential(
-                init_(nn.Linear(num_inputs, hidden_size)), nn.Tanh(),
-                init_(nn.Linear(hidden_size, hidden_size)), nn.Tanh(),
+                init_(nn.Linear(num_inputs, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
                 #init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
                 init_(nn.Linear(hidden_size, last_hidden_size)), nn.Tanh())
         elif activation_layers_type=="ReLu":
@@ -249,8 +249,8 @@ class MLPBase(NNBase):
 
         if activation_layers_type=="Tanh":
             self.critic = nn.Sequential(
-                init_(nn.Linear(num_inputs, hidden_size)), nn.Tanh(),
-                init_(nn.Linear(hidden_size, hidden_size)), nn.Tanh(),
+                init_(nn.Linear(num_inputs, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
                 #init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
                 init_(nn.Linear(hidden_size, last_hidden_size)), nn.Tanh())
         elif activation_layers_type=="ReLu":
