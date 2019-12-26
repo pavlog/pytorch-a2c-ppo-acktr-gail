@@ -5,7 +5,7 @@ baseline = os.path.realpath("../baselines/")
 roboschool = os.path.realpath("../roboschool/")
 sys.path.insert(0, robotEnv)
 sys.path.insert(0, baseline)
-sys.path.insert(0, roboschool)
+#sys.path.insert(0, roboschool)
 
 robotlib = os.path.realpath("../../Robot/pyRobotLib")
 sys.path.insert(0, robotlib)
@@ -82,17 +82,28 @@ args = parser.parse_args()
 
 args.det = not args.non_det
 
+
+# 0 is a walk
+# 1 is a balance
+trainType = 1
+filesNamesSuffix = ""
+makeEnvFunction = makeEnv.make_env_with_best_settings
+if trainType==1:
+    filesNamesSuffix = "balance_"
+    makeEnvFunction = makeEnv.make_env_for_balance
+
 args.env_name = "QuadruppedWalk-v1" #'RoboschoolAnt-v1' #"QuadruppedWalk-v1" #'RoboschoolAnt-v1' # "QuadruppedWalk-v1"
 #args.load_dir = "./trained_models/"+args.env_name+"/ppo copy 4/"
 args.load_dir = "./trained_models/"+args.env_name+"/ppo/"
 #args.load_dir = "./trained_models/"+args.env_name+"/ppo copy 3/"
 #args.use_proper_time_limits = True
 
-env = makeEnv.make_env_with_best_settings(args.env_name)
+env = makeEnvFunction(args.env_name)
 
-hidden_size = 200
+hidden_size = 64
 
-loadFilename = os.path.join(args.load_dir, "{}_{}.pt".format(args.env_name,hidden_size))
+loadFilename = os.path.join(args.load_dir, "{}_{}{}.pt".format(args.env_name,filesNamesSuffix,hidden_size))
+loadFilename = os.path.join(args.load_dir, "{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,hidden_size))
 #loadFilename = "./trained_models/QuadruppedWalk-v1_best/ppo/QuadruppedWalk-v1QuadruppedWalk-v1_256_best_distance.pt"
 # We need to use the same statistics for normalization as used in training
 #actor_critic,_ = torch.load(loadFilename)
@@ -104,7 +115,7 @@ loadFilename = os.path.join(args.load_dir, "{}_{}.pt".format(args.env_name,hidde
 
 obs = env.reset()
 
-env.spec.max_episode_steps = args.num_steps
+env.spec.max_episode_steps = min(args.num_steps,env.spec.max_episode_steps)
 
 #env.cam.lookat[0] += 0.5         # x,y,z offset from the object (works if trackbodyid=-1)
 #print(env0.viewer)
@@ -174,6 +185,9 @@ while True:
 
     while True:
         with torch.no_grad():
+
+            #recurrent_hidden_states = torch.zeros(1,
+            #                                actor_critic.recurrent_hidden_state_size)
             inputs = torch.FloatTensor(obs.reshape(1, -1)).to(device)
             value, action, _, recurrent_hidden_states = actor_critic.act(
             inputs, recurrent_hidden_states, masks, deterministic=args.det)

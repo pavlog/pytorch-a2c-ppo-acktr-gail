@@ -1,11 +1,12 @@
 import os,sys,inspect
 cmd_folder = os.path.realpath(os.path.abspath(os.path.split(inspect.getfile( inspect.currentframe() ))[0]))
 robotEnv = os.path.realpath("../")
+#print(robotEnv)
 baseline = os.path.realpath("../baselines/")
 roboschool = os.path.realpath("../roboschool/")
 sys.path.insert(0, robotEnv)
 sys.path.insert(0, baseline)
-sys.path.insert(0, roboschool)
+#sys.path.insert(0, roboschool)
 import roboschool
 import quadruppedEnv
 
@@ -63,6 +64,16 @@ class DefaultRewardsShaper:
 
 def main():
 
+
+    # 0 is a walk
+    # 1 is a balance
+    trainType = 1
+    filesNamesSuffix = ""
+    makeEnvFunction = makeEnv.make_env_with_best_settings
+    if trainType==1:
+        filesNamesSuffix = "balance_"
+        makeEnvFunction = makeEnv.make_env_for_balance
+
     gettrace = getattr(sys, 'gettrace', None)
     
     args = get_args()
@@ -75,11 +86,11 @@ def main():
     args.num_processes = 4
     if gettrace():
         args.num_processes = 1
-    args.lr = 0.0003
+    args.lr = 0.0001
     args.entropy_coef = 0.0
     args.value_loss_coef  =0.5
     args.ppo_epoch  = 4
-    args.num_mini_batch = 4
+    args.num_mini_batch = 256
     args.gamma =0.99
     args.gae_lambda =0.95
     args.clip_param = 0.2
@@ -92,15 +103,15 @@ def main():
         args.save_dir = "./trained_models/"+args.env_name+"debug/"
         args.load_dir  = "./trained_models/"+args.env_name+"debug/"
         args.log_dir = "./logs/robot_d"
-    args.num_env_steps = 100000000
-    args.log_interval = 10
+    args.num_env_steps = 2000000
+    args.log_interval = 20
     args.eval_interval = 2
-    args.hidden_size =  200 
-    args.last_hidden_size = 200
-    args.recurrent_policy = True
+    args.hidden_size =  64 
+    args.last_hidden_size = 64
+    args.recurrent_policy = False #True
     args.save_interval = 20
 
-    reward_shaper = DefaultRewardsShaper(scale_value = 0.01)
+    reward_shaper = DefaultRewardsShaper(scale_value = 0.001)
 
     print("Num processes:", args.num_processes)
 
@@ -119,13 +130,15 @@ def main():
     device = torch.device("cuda:0" if args.cuda else "cpu")
     torch.set_num_threads(1)
 
+
+
     envs = make_vec_envs(
                         args.env_name,
                         args.seed, args.num_processes,
                         args.gamma, None, device, False,
                         normalizeOb=False, normalizeReturns=False,
                         max_episode_steps=args.num_steps,
-                        makeEnvFunc=makeEnv.make_env_with_best_settings,
+                        makeEnvFunc=makeEnvFunction,
                         num_frame_stack = 1,
                         info_keywords=('episode_steps','episode_reward','progress','servo','distToTarget',))
     #print(envs.observation_space.shape,envs.action_space)
@@ -140,7 +153,8 @@ def main():
     actor_critic, ob_rms = torch.load(os.path.join(load_path, args.env_name + ".pt"))
     '''
     load_path = os.path.join(args.load_dir, args.algo)
-    load_path = os.path.join(load_path, "{}_{}.pt".format(args.env_name,args.hidden_size))
+    load_path = os.path.join(load_path, "{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
+    #load_path = os.path.join(load_path, "{}_{}{}.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
     preptrained_path = "../Train/trained_models/QuadruppedWalk-v1/Train_QuadruppedWalk-v1_256.pth"
     loadPretrained = False
     if loadPretrained and os.path.isfile(preptrained_path):
@@ -235,6 +249,8 @@ def main():
     except OSError:
         pass
 
+    skipWriteBest = True
+
     start = time.time()
     num_updates = int(args.num_env_steps) // args.num_steps // args.num_processes
     for j in range(num_updates):
@@ -257,6 +273,8 @@ def main():
 
             # Obser reward and next obs
             obs, reward, done, infos = envs.step(action)
+
+            #envs.venv.venv.venv.envs[0].render()
 
             index = 0
             for d in done:
@@ -302,22 +320,25 @@ def main():
             #    print(i_episode,"({:.1f}/{}/{:.2f}) ".format(episode_rewards[-1],episode_steps[-1],episode_dist_to_target[-1]),end='',flush=True)
 
             if episodeDone:
-                print("Mean Reward:",Fore.WHITE,np.mean(episode_rewards),Style.RESET_ALL," max reward:", maxReward)
+                print("Mean:",Fore.WHITE,np.mean(episode_rewards),Style.RESET_ALL," Median:",Fore.WHITE,np.median(episode_rewards),Style.RESET_ALL," max reward:", maxReward)
 
                 if len(episode_rewards) and np.mean(episode_rewards)>maxReward and j>args.log_interval:
-                    maxReward = np.mean(episode_rewards)
+                    if skipWriteBest==False:
+                        maxReward = np.mean(episode_rewards)
 
-                    bestFilename = os.path.join(save_path,"{}_{}_best.pt".format(args.env_name,args.hidden_size))
-                    print("Writing best reward:","({:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),bestFilename)
-                    torch.save([
-                        actor_critic,
-                        getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
-                    ], bestFilename)
+                        bestFilename = os.path.join(save_path,"{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
+                        print("Writing best reward:","({:.1f}/{:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.median(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),bestFilename)
+                        torch.save([
+                            actor_critic,
+                            getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
+                        ], bestFilename)
+                    else:
+                        skipWriteBest = False
 
                 if len(episode_steps) and np.mean(episode_steps)>maxSteps and j>args.log_interval:
                     maxSteps = np.mean(episode_steps)
 
-                    bestFilename = os.path.join(save_path, "{}_{}_best_steps.pt".format(args.env_name,args.hidden_size))
+                    bestFilename = os.path.join(save_path, "{}_{}{}_best_steps.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
                     print("Writing best steps:","({:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),bestFilename)
                     torch.save([
                         actor_critic,
@@ -365,14 +386,14 @@ def main():
         # save for every interval-th episode or for the last epoch
         if (j % args.save_interval == 0 or j == num_updates - 1) and args.save_dir != "":
 
-            fileName = os.path.join(save_path, "{}_{}.pt".format(args.env_name,args.hidden_size))
+            fileName = os.path.join(save_path, "{}_{}{}.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
             torch.save([
                 actor_critic,
                 getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
             ], fileName)
             print("Saved:",fileName, " cur avg rewards:",np.mean(episode_rewards))
 
-            fileName = os.path.join(save_path, "{}_{}_actor.pt".format(args.env_name,args.hidden_size))
+            fileName = os.path.join(save_path, "{}_{}{}_actor.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
             torch.save(actor_critic.state_dict, fileName)
             print("Saved:",fileName)
 
