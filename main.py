@@ -20,6 +20,7 @@ quadruppedEnv.settings.history3Len = 0.0
 
 from colorama import Fore, Back, Style 
 
+import argparse
 
 import copy
 import glob
@@ -65,18 +66,16 @@ class DefaultRewardsShaper:
 def main():
 
 
-    # 0 is a walk
-    # 1 is a balance
-    trainType = 1
-    filesNamesSuffix = ""
-    makeEnvFunction = makeEnv.make_env_with_best_settings
-    if trainType==1:
-        filesNamesSuffix = "balance_"
-        makeEnvFunction = makeEnv.make_env_for_balance
-
     gettrace = getattr(sys, 'gettrace', None)
     
-    args = get_args()
+    parser = argparse.ArgumentParser(description='RL')
+    parser.add_argument(
+            '--action-type',
+            type=int,
+            default=-1,
+            help='action type to play (default: -1)')
+
+    args = get_args(parser)
 
     args.algo = 'ppo'
     args.env_name = 'QuadruppedWalk-v1' #'RoboschoolAnt-v1' #'QuadruppedWalk-v1' #'RoboschoolAnt-v1' #'QuadruppedWalk-v1'
@@ -111,7 +110,25 @@ def main():
     args.recurrent_policy = False #True
     args.save_interval = 20
 
+    # 0 is a walk
+    # 1 is a balance
+    trainType = 1
+    filesNamesSuffix = ""
+    if args.action_type>=0:
+        trainType = args.action_type
+ 
+    makeEnvFunction = makeEnv.make_env_with_best_settings
+    if trainType==1:
+        filesNamesSuffix = "balance_"
+        makeEnvFunction = makeEnv.make_env_for_balance
+
+    makeEnvFunction = makeEnv.make_env_with_best_settings
+    if trainType==1:
+        filesNamesSuffix = "balance_"
+        makeEnvFunction = makeEnv.make_env_for_balance
     reward_shaper = DefaultRewardsShaper(scale_value = 0.001)
+
+    print("ActionType ",args.action_type)
 
     print("Num processes:", args.num_processes)
 

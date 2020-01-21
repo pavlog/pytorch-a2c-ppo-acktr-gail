@@ -78,6 +78,12 @@ parser.add_argument(
         default=10000,
         help='number of forward steps in A2C (default: 5)')
 
+parser.add_argument(
+        '--action-type',
+        type=int,
+        default=-1,
+        help='action type to play (default: -1)')
+
 args = parser.parse_args()
 
 args.det = not args.non_det
@@ -86,6 +92,8 @@ args.det = not args.non_det
 # 0 is a walk
 # 1 is a balance
 trainType = 1
+if args.action_type>=0:
+    trainType = args.action_type
 filesNamesSuffix = ""
 makeEnvFunction = makeEnv.make_env_with_best_settings
 if trainType==1:
