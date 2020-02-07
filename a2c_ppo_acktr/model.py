@@ -225,6 +225,12 @@ class MLPBase(NNBase):
                 init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
                 #init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
                 init_(nn.Linear(hidden_size, last_hidden_size)), nn.Tanh())
+        if activation_layers_type=="TanhM2":
+            self.actor = nn.Sequential(
+                init_(nn.Linear(num_inputs, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, hidden_size*2)), nn.LeakyReLU(),
+                #init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size*2, last_hidden_size)), nn.Tanh())
         elif activation_layers_type=="ReLu":
             self.actor = nn.Sequential(
                 init_(nn.Linear(num_inputs, hidden_size)), nn.ReLU(),
@@ -253,6 +259,12 @@ class MLPBase(NNBase):
                 init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
                 #init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
                 init_(nn.Linear(hidden_size, last_hidden_size)), nn.Tanh())
+        elif activation_layers_type=="TanhM2":
+            self.critic = nn.Sequential(
+                init_(nn.Linear(num_inputs, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size, hidden_size*2)), nn.LeakyReLU(),
+                #init_(nn.Linear(hidden_size, hidden_size)), nn.LeakyReLU(),
+                init_(nn.Linear(hidden_size*2, last_hidden_size)), nn.Tanh())
         elif activation_layers_type=="ReLu":
             self.critic = nn.Sequential(
                 init_(nn.Linear(num_inputs, hidden_size)), nn.ReLU(),

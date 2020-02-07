@@ -7,6 +7,7 @@ roboschool = os.path.realpath("../roboschool/")
 sys.path.insert(0, robotEnv)
 sys.path.insert(0, baseline)
 #sys.path.insert(0, roboschool)
+sys.path.insert(0, "../../Robot/RobotSimulator/Resources/")
 import roboschool
 import quadruppedEnv
 
@@ -88,12 +89,12 @@ def main():
     args.lr = 0.0001
     args.entropy_coef = 0.0
     args.value_loss_coef  =0.5
-    args.ppo_epoch  = 4
-    args.num_mini_batch = 256
+    args.ppo_epoch  = 10
+    args.num_mini_batch = 64
     args.gamma =0.99
     args.gae_lambda =0.95
     args.clip_param = 0.2
-    args.use_linear_lr_decay = True
+    args.use_linear_lr_decay = True #True
     args.use_proper_time_limits = True
     args.save_dir = "./trained_models/"+args.env_name+"/"
     args.load_dir  = "./trained_models/"+args.env_name+"/"
@@ -105,14 +106,17 @@ def main():
     args.num_env_steps = 2000000
     args.log_interval = 20
     args.eval_interval = 2
-    args.hidden_size =  64 
-    args.last_hidden_size = 64
+    args.hidden_size =  16 
+    args.last_hidden_size = args.hidden_size
     args.recurrent_policy = False #True
     args.save_interval = 20
+    args.seed = 2
 
     # 0 is a walk
     # 1 is a balance
-    trainType = 1
+    # 2 multitasks
+    # 3 multitask experiments
+    trainType = 3
     filesNamesSuffix = ""
     if args.action_type>=0:
         trainType = args.action_type
@@ -122,13 +126,17 @@ def main():
         filesNamesSuffix = "balance_"
         makeEnvFunction = makeEnv.make_env_for_balance
 
-    makeEnvFunction = makeEnv.make_env_with_best_settings
-    if trainType==1:
-        filesNamesSuffix = "balance_"
-        makeEnvFunction = makeEnv.make_env_for_balance
+    if trainType==2:
+        filesNamesSuffix = "analytical_"
+        makeEnvFunction = makeEnv.make_env_with_best_settings_for_analytical
+
+    if trainType==3:
+        filesNamesSuffix = "analytical2_"
+        makeEnvFunction = makeEnv.make_env_with_best_settings_for_analytical2
+
     reward_shaper = DefaultRewardsShaper(scale_value = 0.001)
 
-    print("ActionType ",args.action_type)
+    print("ActionType ",trainType," ",filesNamesSuffix)
 
     print("Num processes:", args.num_processes)
 
@@ -162,7 +170,7 @@ def main():
     actor_critic = Policy(
         envs.observation_space.shape,
         envs.action_space,
-        base_kwargs={'recurrent': args.recurrent_policy,'hidden_size' : args.hidden_size,'last_hidden_size' : args.last_hidden_size, 'activation_layers_type' : "Tanh"})
+        base_kwargs={'recurrent': args.recurrent_policy,'hidden_size' : args.hidden_size,'last_hidden_size' : args.last_hidden_size, 'activation_layers_type' : "TanhM2"})
 
     '''
 #    if args.load_dir not None:
@@ -323,15 +331,19 @@ def main():
                 if 'alive' in info.keys():
                     episode_rewards_alive.append(info['alive'])
                     writer.add_scalar('reward/alive', info['alive'], i_episode)
-                if 'progress' in info.keys():
-                    episode_rewards_progress.append(info['progress'])
-                    writer.add_scalar('reward/progress', info['progress'], i_episode)
+                if 'prog' in info.keys():
+                    episode_rewards_progress.append(info['prog'])
+                    writer.add_scalar('reward/progress', info['prog'], i_episode)
                 if 'servo' in info.keys():
                     episode_rewards_servo.append(info['servo'])
                     writer.add_scalar('reward/servo', info['servo'], i_episode)
-                if 'distToTarget' in info.keys():
-                    episode_dist_to_target.append(info['distToTarget'])
-                    writer.add_scalar('reward/distToTarget', info['distToTarget'], i_episode)
+                if 'd2T' in info.keys():
+                    episode_dist_to_target.append(info['d2T'])
+                    writer.add_scalar('reward/distToTarget', info['d2T'], i_episode)
+
+                for val in info.keys():
+                    if val not in ["reward","steps","alive","prog","servo","d2T",'epos','t']:
+                        writer.add_scalar('reward/'+val, info[val], i_episode)
 
             #if episodeDone and i_episode%10==0:
             #    print(i_episode,"({:.1f}/{}/{:.2f}) ".format(episode_rewards[-1],episode_steps[-1],episode_dist_to_target[-1]),end='',flush=True)
@@ -344,7 +356,7 @@ def main():
                         maxReward = np.mean(episode_rewards)
 
                         bestFilename = os.path.join(save_path,"{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
-                        print("Writing best reward:","({:.1f}/{:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.median(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),bestFilename)
+                        print("Writing best reward:",Fore.GREEN,"({:.1f}/{:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.median(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),Style.RESET_ALL,bestFilename)
                         torch.save([
                             actor_critic,
                             getattr(utils.get_vec_normalize(envs), 'ob_rms', None)

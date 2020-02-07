@@ -91,7 +91,12 @@ args.det = not args.non_det
 
 # 0 is a walk
 # 1 is a balance
-trainType = 1
+# 2 analytical
+# 3 analytical tasks with walk
+# 4 walk tasks with analytica
+# 5 walk tasks with analytica2
+
+trainType = 5
 if args.action_type>=0:
     trainType = args.action_type
 filesNamesSuffix = ""
@@ -99,6 +104,18 @@ makeEnvFunction = makeEnv.make_env_with_best_settings
 if trainType==1:
     filesNamesSuffix = "balance_"
     makeEnvFunction = makeEnv.make_env_for_balance
+if trainType==2:
+    filesNamesSuffix = "analytical_"
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_analytical
+if trainType==3:
+    filesNamesSuffix = ""
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_analytical
+if trainType==4:
+    filesNamesSuffix = "analytical_"
+    makeEnvFunction = makeEnv.make_env_with_best_settings
+if trainType==5:
+    filesNamesSuffix = "analytical2_"
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_analytical2
 
 args.env_name = "QuadruppedWalk-v1" #'RoboschoolAnt-v1' #"QuadruppedWalk-v1" #'RoboschoolAnt-v1' # "QuadruppedWalk-v1"
 #args.load_dir = "./trained_models/"+args.env_name+"/ppo copy 4/"
@@ -108,10 +125,12 @@ args.load_dir = "./trained_models/"+args.env_name+"/ppo/"
 
 env = makeEnvFunction(args.env_name)
 
-hidden_size = 64
+hidden_size = 16 #64
 
 loadFilename = os.path.join(args.load_dir, "{}_{}{}.pt".format(args.env_name,filesNamesSuffix,hidden_size))
 loadFilename = os.path.join(args.load_dir, "{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,hidden_size))
+#loadFilename = os.path.join(args.load_dir, "QuadruppedWalk-v1_64_best.pt")
+
 #loadFilename = "./trained_models/QuadruppedWalk-v1_best/ppo/QuadruppedWalk-v1QuadruppedWalk-v1_256_best_distance.pt"
 # We need to use the same statistics for normalization as used in training
 #actor_critic,_ = torch.load(loadFilename)
