@@ -88,6 +88,14 @@ args = parser.parse_args()
 
 args.det = not args.non_det
 
+policies = []
+
+def make_env_multinetwork(envName):
+    from multiEnv import MultiNetworkEnv
+    env = makeEnv.make_env_with_best_settings_for_compound(envName)
+    env = MultiNetworkEnv(env,policies)
+    return env
+
 
 # 0 is a walk
 # 1 is a balance
@@ -96,7 +104,7 @@ args.det = not args.non_det
 # 4 walk tasks with analytica
 # 5 walk tasks with analytica2
 
-trainType = 5
+trainType = 10
 if args.action_type>=0:
     trainType = args.action_type
 filesNamesSuffix = ""
@@ -116,6 +124,26 @@ if trainType==4:
 if trainType==5:
     filesNamesSuffix = "analytical2_"
     makeEnvFunction = makeEnv.make_env_with_best_settings_for_analytical2
+if trainType==6:
+    filesNamesSuffix = "frontback_"
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_front_back
+if trainType==7:
+    filesNamesSuffix = "leftright_"
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_left_right
+if trainType==8:
+    filesNamesSuffix = "all_"
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_all
+if trainType==9:
+    filesNamesSuffix = "rotate_"
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_rotate
+if trainType==10:
+    from main import PPOPlayer
+    filesNamesSuffix = "compound_"
+    makeEnvFunction = make_env_multinetwork
+
+if trainType==11:
+    filesNamesSuffix = "test_"
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_test
 
 args.env_name = "QuadruppedWalk-v1" #'RoboschoolAnt-v1' #"QuadruppedWalk-v1" #'RoboschoolAnt-v1' # "QuadruppedWalk-v1"
 #args.load_dir = "./trained_models/"+args.env_name+"/ppo copy 4/"
@@ -123,9 +151,28 @@ args.load_dir = "./trained_models/"+args.env_name+"/ppo/"
 #args.load_dir = "./trained_models/"+args.env_name+"/ppo copy 3/"
 #args.use_proper_time_limits = True
 
+hidden_size = 64
+
+device = torch.device("cpu")
+
+
+if trainType==10:
+    multiNetworkName = [
+        "frontback_",
+        "all_",
+        "leftright_",
+        "rotate_"
+    ]
+    policies = []
+    for net in multiNetworkName:
+        bestFilename = os.path.join(args.load_dir,"{}_{}{}_best.pt".format(args.env_name,net,hidden_size))
+        ac,_ = torch.load(bestFilename)
+        policies.append(PPOPlayer(ac,device))
+        print("Policy multi loaded: ",bestFilename)
+
+
 env = makeEnvFunction(args.env_name)
 
-hidden_size = 16 #64
 
 loadFilename = os.path.join(args.load_dir, "{}_{}{}.pt".format(args.env_name,filesNamesSuffix,hidden_size))
 loadFilename = os.path.join(args.load_dir, "{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,hidden_size))
@@ -194,14 +241,56 @@ for k in actor_critic.base.actor._modules:
         #print("\nweight", weights)
     print("")
 '''
-device = torch.device("cpu")
+
+
+# Runs policy for X episodes and returns average reward
+def evaluate_policy(env,policy, eval_episodes=10, render=False,device=None):
+    print ("---------------------------------------")
+    avg_reward = 0.
+    policy.eval()
+    for _ in range(eval_episodes):
+        obs = env.reset()
+        done = False
+        episode_reward = 0
+        episode_steps = 0
+        recurrent_hidden_states = torch.zeros(1,
+                                      policy.recurrent_hidden_state_size)
+        masks = torch.zeros(1, 1)
+        while not done:
+            inputs = torch.FloatTensor(obs.reshape(1, -1)).to(device)
+            value, action, _, recurrent_hidden_states = policy.act(
+            inputs, recurrent_hidden_states, masks)
+            #obs = torch.FloatTensor((obs).reshape(1, -1)).to(device)
+
+            if render:
+                env.render()
+            obs, reward, done, info = env.step(action[0].detach().numpy())
+            episode_reward+=reward
+            episode_steps+=1
+            avg_reward += reward
+            if done:
+                if len(info):
+                    print(info)
+                else:
+                    print("Reward:",episode_reward," Steps:",episode_steps)
+
+    avg_reward /= eval_episodes
+
+    print ("Evaluation over %d episodes: %f" % (eval_episodes, avg_reward))
+    print ("---------------------------------------")
+    return avg_reward
+
+
 
 while True:
 
-    actor_critic,ob_rms = torch.load(loadFilename)
-    #actor_critic,_ = torch.load(loadFilename)
+    actor_critic,_ = torch.load(loadFilename)
     actor_critic.eval()
-    #actor_critic.to(device)
+
+    evaluate_policy(env,actor_critic,100,True,device)
+
+'''
+    continue
 
     recurrent_hidden_states = torch.zeros(1,
                                       actor_critic.recurrent_hidden_state_size)
@@ -280,3 +369,4 @@ while True:
                         np.mean(episode_rewards)/np.mean(episode_steps),
                         np.mean(episode_rewards_servo)/np.mean(episode_steps)))
             break
+'''

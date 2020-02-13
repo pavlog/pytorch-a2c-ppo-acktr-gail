@@ -42,7 +42,6 @@ from a2c_ppo_acktr.arguments import get_args
 from a2c_ppo_acktr.envs import make_vec_envs
 from a2c_ppo_acktr.model import Policy
 from a2c_ppo_acktr.storage import RolloutStorage
-from evaluation import evaluate
 from tensorboardX import SummaryWriter
 
 from gym.envs.registration import register
@@ -50,6 +49,86 @@ import glm
 
 from quadruppedEnv import makeEnv
 
+class PPOPlayer:
+        def __init__(self,actor,device):
+            self.actor = actor
+            self.actor.eval()
+            self.device = device
+            self.recurrent_hidden_states = torch.zeros(1,
+                                        actor.recurrent_hidden_state_size)
+            self.masks = torch.zeros(1, 1)
+
+        def getActions(self,inputs):
+            inputs = torch.FloatTensor(inputs.reshape(1, -1)).to(self.device)
+            _, action, _, self.recurrent_hidden_states = self.actor.act(
+            inputs, self.recurrent_hidden_states, self.masks)
+            return action
+
+# Runs policy for X episodes and returns average reward
+def evaluate_policy(env,policy, eval_episodes=10, render=False,device=None):
+    print ("---------------------------------------")
+    avg_reward = 0.
+    policy.eval()
+    for _ in range(eval_episodes):
+        obs = env.reset()
+        done = False
+        episode_reward = 0
+        episode_steps = 0
+        recurrent_hidden_states = torch.zeros(1,
+                                      policy.recurrent_hidden_state_size)
+        masks = torch.zeros(1, 1)
+        while not done:
+            inputs = torch.FloatTensor(obs.reshape(1, -1)).to(device)
+            value, action, _, recurrent_hidden_states = policy.act(
+            inputs, recurrent_hidden_states, masks)
+            #obs = torch.FloatTensor((obs).reshape(1, -1)).to(device)
+
+            if render:
+                env.render()
+            obs, reward, done, info = env.step(action[0].detach().numpy())
+            episode_reward+=reward
+            episode_steps+=1
+            avg_reward += reward
+            if done:
+                if len(info):
+                    print(info)
+                else:
+                    print("Reward:",episode_reward," Steps:",episode_steps)
+
+    avg_reward /= eval_episodes
+
+    print ("Evaluation over %d episodes: %f" % (eval_episodes, avg_reward))
+    print ("---------------------------------------")
+    return avg_reward
+
+
+
+class SamplesEnv:
+        def __init__(self,data):
+            self.numSteps = 1000
+            self.data = data
+            self.states = data["state"]
+            self.numStates = len(self.states)
+            self.actions = data["action"]
+            self.next_states = data["next_state"]
+            self.observation_space = np.arange(len(self.states[0]))
+            self.action_space = np.arange(len(self.actions[0]))
+            self.index = 0
+
+        def reset(self):
+            self.index+=1
+            return self.states[(self.index-1)%self.numStates]
+            #,env.action_space.shape[0],100,0.25
+
+        def step(self,actions):
+            self.recordedActions = self.actions[self.index%self.numStates]
+            reward = -np.sum((actions - self.recordedActions)**2) / self.action_space.shape[0]
+            done = False
+            if self.index % self.numSteps==0:
+                done=True
+            self.index+=1
+            newState = self.next_states[(self.index-1)%self.numStates]
+            return newState, reward*10.0, done, {}
 
 class DefaultRewardsShaper:
     def __init__(self, clip_value = 0, scale_value = 1, shift_value = 0):
@@ -63,6 +142,77 @@ class DefaultRewardsShaper:
         if self.clip_value > 0:
             reward = np.clip(reward, -self.clip_value, self.clip_value)
         return reward
+
+def mutate(policy, power,powerLast):
+    print("Mutation with:",power," last layer:",powerLast)
+    with torch.no_grad():
+        mutation_power = power
+
+        countLast = 0
+        count = 0
+        for paramT in policy.base.actor.parameters():
+            if(len(paramT.shape)==2): #weights of linear layer
+                countLast = count
+            count+=1
+
+        count = 0
+        for name,param in policy.base.actor.named_parameters():
+            pow = power
+            if count==countLast or count==countLast+1:
+                pow = powerLast
+            print(name,pow, end=' ')
+            if(len(param.shape)==1): #bias of linear layer
+                rands = np.random.randn(param.shape[0])
+                for i0 in range(param.shape[0]):
+                    param[i0]+= pow * rands[i0]
+            if(len(param.shape)==2): #weights of linear layer
+                rands = np.random.randn(param.shape[0],param.shape[1])
+                for i0 in range(param.shape[0]):
+                    for i1 in range(param.shape[1]):
+                        param[i0][i1]+= pow * rands[i0][i1]
+            count+=1
+
+        policy.eval()
+        print("")
+
+def lock(policy, first,last):
+    print("Lock with:",first," last layer:",last)
+    with torch.no_grad():
+        countLast = 0
+        count = 0
+        for paramT in policy.base.actor.parameters():
+            if(len(paramT.shape)==2): #weights of linear layer
+                countLast = count
+            count+=1
+
+        count = 0
+        for param in policy.base.actor.parameters():
+            needLock = first
+            if count==countLast or count==countLast+1:
+                needLock = last
+            if needLock:
+                param.requires_grad = False
+            else:
+                param.requires_grad = True
+            count+=1
+
+        policy.eval()
+
+policies = []
+
+def make_env_multinetwork(envName):
+    from multiEnv import MultiNetworkEnv
+    env = makeEnv.make_env_with_best_settings_for_compound(envName)
+    env = MultiNetworkEnv(env,policies)
+    return env
+
+def printNetwork(net):
+    print(net)
+    for name, param in net.named_parameters():
+        if hasattr(param,"requires_grad"):
+            print(name, param.requires_grad,end=' ') #,param.data)
+    print('')
+
 
 def main():
 
@@ -89,12 +239,12 @@ def main():
     args.lr = 0.0001
     args.entropy_coef = 0.0
     args.value_loss_coef  =0.5
-    args.ppo_epoch  = 10
-    args.num_mini_batch = 64
+    args.ppo_epoch  = 4
+    args.num_mini_batch = 256
     args.gamma =0.99
     args.gae_lambda =0.95
     args.clip_param = 0.2
-    args.use_linear_lr_decay = True #True
+    args.use_linear_lr_decay = True #True #True #True
     args.use_proper_time_limits = True
     args.save_dir = "./trained_models/"+args.env_name+"/"
     args.load_dir  = "./trained_models/"+args.env_name+"/"
@@ -103,20 +253,23 @@ def main():
         args.save_dir = "./trained_models/"+args.env_name+"debug/"
         args.load_dir  = "./trained_models/"+args.env_name+"debug/"
         args.log_dir = "./logs/robot_d"
-    args.num_env_steps = 2000000
-    args.log_interval = 20
+    args.num_env_steps = 1000000
+    args.log_interval = 30
     args.eval_interval = 2
-    args.hidden_size =  16 
+    args.hidden_size =  64 
     args.last_hidden_size = args.hidden_size
     args.recurrent_policy = False #True
     args.save_interval = 20
-    args.seed = 2
+    args.seed = 1
+
+    allowMutate = True
+
 
     # 0 is a walk
     # 1 is a balance
     # 2 multitasks
     # 3 multitask experiments
-    trainType = 3
+    trainType = 9
     filesNamesSuffix = ""
     if args.action_type>=0:
         trainType = args.action_type
@@ -133,6 +286,35 @@ def main():
     if trainType==3:
         filesNamesSuffix = "analytical2_"
         makeEnvFunction = makeEnv.make_env_with_best_settings_for_analytical2
+
+    if trainType==4:
+        filesNamesSuffix = "frontback_"
+        makeEnvFunction = makeEnv.make_env_with_best_settings_for_front_back
+
+    if trainType==5:
+        filesNamesSuffix = "leftright_"
+        makeEnvFunction = makeEnv.make_env_with_best_settings_for_left_right
+
+    if trainType==6:
+        filesNamesSuffix = "all_"
+        makeEnvFunction = makeEnv.make_env_with_best_settings_for_all
+
+    if trainType==7:
+        filesNamesSuffix = "rotate_"
+        makeEnvFunction = makeEnv.make_env_with_best_settings_for_rotate
+
+    if trainType==8:
+        filesNamesSuffix = "compound_"
+        makeEnvFunction = make_env_multinetwork
+
+    if trainType==9:
+        allowMutate = False
+        args.use_linear_lr_decay = False
+        #args.num_steps = 1024 #2048
+        #args.ppo_epoch  = 2
+        #args.num_mini_batch = 256
+        filesNamesSuffix = "test_"
+        makeEnvFunction = makeEnv.make_env_with_best_settings_for_test
 
     reward_shaper = DefaultRewardsShaper(scale_value = 0.001)
 
@@ -155,6 +337,21 @@ def main():
     device = torch.device("cuda:0" if args.cuda else "cpu")
     torch.set_num_threads(1)
 
+    load_dir = os.path.join(args.load_dir, args.algo)
+
+    multiNetworkName = [
+        "frontback_",
+        "all_",
+        "leftright_",
+        "rotate_"
+    ]
+    if trainType==8:
+        for net in multiNetworkName:
+            bestFilename = os.path.join(load_dir,"{}_{}{}_best.pt".format(args.env_name,net,args.hidden_size))
+            ac,_ = torch.load(bestFilename)
+            policies.append(PPOPlayer(ac,device))
+            print("Policy multi loaded: ",bestFilename)
+
 
 
     envs = make_vec_envs(
@@ -170,15 +367,14 @@ def main():
     actor_critic = Policy(
         envs.observation_space.shape,
         envs.action_space,
-        base_kwargs={'recurrent': args.recurrent_policy,'hidden_size' : args.hidden_size,'last_hidden_size' : args.last_hidden_size, 'activation_layers_type' : "TanhM2"})
+        base_kwargs={'recurrent': args.recurrent_policy,'hidden_size' : args.hidden_size,'last_hidden_size' : args.last_hidden_size, 'activation_layers_type' : "Tanh"})
 
     '''
 #    if args.load_dir not None:
     load_path = os.path.join(args.load_dir, args.algo)
     actor_critic, ob_rms = torch.load(os.path.join(load_path, args.env_name + ".pt"))
     '''
-    load_path = os.path.join(args.load_dir, args.algo)
-    load_path = os.path.join(load_path, "{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
+    load_path = os.path.join(load_dir, "{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
     #load_path = os.path.join(load_path, "{}_{}{}.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
     preptrained_path = "../Train/trained_models/QuadruppedWalk-v1/Train_QuadruppedWalk-v1_256.pth"
     loadPretrained = False
@@ -193,6 +389,12 @@ def main():
         actor_critic, ob_rms = torch.load(load_path)
         actor_critic.eval()
         print("NN loaded: ",load_path)
+    else:
+        bestFilename = os.path.join(load_dir,"{}_{}{}_best_pretrain.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
+        if os.path.isfile(bestFilename):
+            actor_critic, ob_rms = torch.load(bestFilename)
+            actor_critic.eval()
+            print("NN loaded: ",bestFilename)
 
 
     maxReward = -10000.0
@@ -274,10 +476,108 @@ def main():
     except OSError:
         pass
 
+    trainOnSamplesAndExit = False
+    if trainOnSamplesAndExit:
+        import pickle
+        print ("---------------------------------------")
+        print ("Samples preload")
+        data = pickle.load( open( "../QuadruppedWalk-v1.samples", "rb" ) )
+
+        learning_rate = 0.0001
+        max_episodes = 100
+        max_timesteps = 4000
+        betas = (0.9, 0.999)
+        log_interval = 1
+
+        envSamples = SamplesEnv(data)
+        envSamples.numSteps = max_timesteps
+
+        # create a stochastic gradient descent optimizer
+        optimizer = torch.optim.Adam(actor_critic.base.actor.parameters(),
+                                                lr=learning_rate, betas=betas)
+        #optimizer = optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9)
+        # create a loss function
+        criterion = nn.MSELoss(reduction="sum")
+
+            # run the main training loop
+        for epoch in range(max_episodes):
+            state = envSamples.reset()
+            time_step = 0
+            testReward = 0
+            testSteps = 0
+            loss_sum = 0
+            loss_max = 0
+
+            for t in range(max_timesteps):
+                time_step +=1
+
+                nn_state = torch.FloatTensor((state).reshape(1, -1)).to(device)
+
+                optimizer.zero_grad()
+                net_out = actor_critic.base.forwardActor(nn_state)
+                net_out = actor_critic.dist.fc_mean(net_out)
+
+                state, reward, done, info = envSamples.step(net_out.detach().numpy())
+                sim_action = envSamples.recordedActions
+
+                sim_action_t = torch.FloatTensor([sim_action]).to(device)
+
+                loss = criterion(net_out, sim_action_t)
+                loss.backward()
+                optimizer.step()
+                loss_sum+=loss.mean()
+                loss_max=max(loss_max,loss.max())
+
+                testReward+=reward
+                testSteps+=1
+
+                if done:
+                    if epoch % log_interval == 0:
+                        #print(best_action_t*scaleActions-net_out*scaleActions)
+                        print('Train Episode: {} t:{} Reward:{} Loss: mean:{:.6f} max: {:.6f}'.format(epoch, t,testReward,loss_sum/t,loss_max))
+                        print(info)
+                        reward = 0
+                    break
+        bestFilename = os.path.join(save_path,"{}_{}{}_best_pretrain.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
+        torch.save([
+            actor_critic,
+            getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
+        ], bestFilename)
+        exit(0)
+
+
     skipWriteBest = True
 
+    printNetwork(actor_critic.base.actor)
+
+    lock(actor_critic,first=False,last=False)
+    #if trainType==9:
+        #allowMutate = False
+        #lock(actor_critic,first=True,last=False)
+        #mutate(actor_critic,power=0.00,powerLast=0.3)
+
+    printNetwork(actor_critic.base.actor)
+    #from torchsummary import summary
+
+    #summary(actor_critic.base.actor, (1, 48, 64))
+    
     start = time.time()
     num_updates = int(args.num_env_steps) // args.num_steps // args.num_processes
+    episodeBucketIndex = 0
+
+    realEval = True #False
+
+    maxReward = 0
+    numEval = 10
+    if realEval:
+        envEval = makeEnvFunction(args.env_name)
+        if hasattr(envEval.env,"tasks") and len(envEval.env.tasks):
+            numEval = max(numEval,len(envEval.env.tasks))
+        maxReward = evaluate_policy(envEval,actor_critic,numEval*2,render=False,device=device)
+
+    noMaxRewardCount = 0
+
+
     for j in range(num_updates):
 
         if args.use_linear_lr_decay:
@@ -349,31 +649,65 @@ def main():
             #    print(i_episode,"({:.1f}/{}/{:.2f}) ".format(episode_rewards[-1],episode_steps[-1],episode_dist_to_target[-1]),end='',flush=True)
 
             if episodeDone:
+                episodeBucketIndex+=1
                 print("Mean:",Fore.WHITE,np.mean(episode_rewards),Style.RESET_ALL," Median:",Fore.WHITE,np.median(episode_rewards),Style.RESET_ALL," max reward:", maxReward)
 
-                if len(episode_rewards) and np.mean(episode_rewards)>maxReward and j>args.log_interval:
-                    if skipWriteBest==False:
-                        maxReward = np.mean(episode_rewards)
+                #'''len(episode_rewards) and np.mean(episode_rewards)>maxReward and''' 
+                if realEval:
+                    if episodeBucketIndex % args.log_interval == 0 and  episodeBucketIndex>args.log_interval:
+                        print("Step:",(j + 1) * args.num_processes * args.num_steps)
+                        if skipWriteBest==False:
+                            evalReward = evaluate_policy(envEval,actor_critic,numEval,device=device)
+        
+                            writer.add_scalar('reward/eval', evalReward, i_episode)
+        
+                            if evalReward>maxReward:
+                                maxReward = evalReward
+                                #maxReward = np.mean(episode_rewards)
 
-                        bestFilename = os.path.join(save_path,"{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
-                        print("Writing best reward:",Fore.GREEN,"({:.1f}/{:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.median(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),Style.RESET_ALL,bestFilename)
-                        torch.save([
-                            actor_critic,
-                            getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
-                        ], bestFilename)
-                    else:
-                        skipWriteBest = False
+                                bestFilename = os.path.join(save_path,"{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
+                                print("Writing best reward:",Fore.GREEN,"({:.1f}/{:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.median(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),Style.RESET_ALL,bestFilename)
+                                torch.save([
+                                    actor_critic,
+                                    getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
+                                ], bestFilename)
+                                noMaxRewardCount = 0
+                            else:
+                                noMaxRewardCount+=1
+                                if allowMutate:
+                                    if noMaxRewardCount==5:
+                                        print("Mutation low last layer")
+                                        lock(actor_critic,first=False,last=False)
+                                        mutate(actor_critic,power=0.00,powerLast=0.01)
+                                    if noMaxRewardCount==8:
+                                        print("Mutation low non last")
+                                        lock(actor_critic,first=False,last=False)
+                                        mutate(actor_critic,power=0.01,powerLast=0.0)
+                                    if noMaxRewardCount==11:
+                                        print("Mutation low all")
+                                        lock(actor_critic,first=False,last=False)
+                                        mutate(actor_critic,power=0.02,powerLast=0.2)
+                                    if noMaxRewardCount==14:
+                                        print("Mutation hi all")
+                                        lock(actor_critic,first=False,last=False)
+                                        mutate(actor_critic,power=0.03,powerLast=0.03)
+                                        noMaxRewardCount = 0
+                        else:
+                            skipWriteBest = False
+                else:
+                    if len(episode_rewards) and np.mean(episode_rewards)>maxReward and j>args.log_interval:
+                        if skipWriteBest==False:
+                            maxReward = np.mean(episode_rewards)
+                            writer.add_scalar('reward/maxReward', evalReward, i_episode)
 
-                if len(episode_steps) and np.mean(episode_steps)>maxSteps and j>args.log_interval:
-                    maxSteps = np.mean(episode_steps)
-
-                    bestFilename = os.path.join(save_path, "{}_{}{}_best_steps.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
-                    print("Writing best steps:","({:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),bestFilename)
-                    torch.save([
-                        actor_critic,
-                        getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
-                    ], bestFilename)
-
+                            bestFilename = os.path.join(save_path,"{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
+                            print("Writing best reward:",Fore.GREEN,"({:.1f}/{:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.median(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),Style.RESET_ALL,bestFilename)
+                            torch.save([
+                                actor_critic,
+                                getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
+                            ], bestFilename)
+                        else:
+                            skipWriteBest = False
             # If done then clean the history of observations.
             masks = torch.FloatTensor(
                 [[0.0] if done_ else [1.0] for done_ in done])
@@ -448,9 +782,10 @@ def main():
                             np.mean(episode_rewards_alive),np.median(episode_rewards_alive),
                             np.min(episode_rewards_alive),np.max(episode_rewards_alive)))
 
-            print(" progress mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                        np.mean(episode_rewards_progress),np.median(episode_rewards_progress),
-                        np.min(episode_rewards_progress),np.max(episode_rewards_progress)))
+            if len(episode_rewards_progress):
+                print(" progress mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
+                            np.mean(episode_rewards_progress),np.median(episode_rewards_progress),
+                            np.min(episode_rewards_progress),np.max(episode_rewards_progress)))
 
             if len(episode_rewards_servo):
                 print(" servo mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
@@ -465,7 +800,7 @@ def main():
             print(" Reward/Steps {:.3f} Progress/Steps: {:.3f} entropy {:.1f} value_loss {:.5f} action_loss {:.5f}\n"
                 .format(
                         np.mean(episode_rewards)/np.mean(episode_steps),
-                        np.mean(episode_rewards_progress)/np.mean(episode_steps),
+                        (0 if len(episode_rewards_progress)==0 else np.mean(episode_rewards_progress)/np.mean(episode_steps)),
                         dist_entropy, 
                         value_loss,
                         action_loss))
