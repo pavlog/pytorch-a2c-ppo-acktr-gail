@@ -102,33 +102,55 @@ def evaluate_policy(env,policy, eval_episodes=10, render=False,device=None):
     return avg_reward
 
 
+import gym
 
-class SamplesEnv:
-        def __init__(self,data):
-            self.numSteps = 1000
-            self.data = data
-            self.states = data["state"]
-            self.numStates = len(self.states)
-            self.actions = data["action"]
-            self.next_states = data["next_state"]
-            self.observation_space = np.arange(len(self.states[0]))
-            self.action_space = np.arange(len(self.actions[0]))
-            self.index = 0
+class SamplesEnv(gym.Env):
+    def __init__(self,data):
+        self.numSteps = 4000
+        self.data = data
+        self.states = data["state"]
+        self.numStates = len(self.states)
+        self.actions = data["action"]
+        self.next_states = data["next_state"]
 
-        def reset(self):
-            self.index+=1
-            return self.states[(self.index-1)%self.numStates]
-            #,env.action_space.shape[0],100,0.25
+        high = np.ones([len(self.states[0])])
+        self.observation_space = gym.spaces.Box(-high, high)
 
-        def step(self,actions):
-            self.recordedActions = self.actions[self.index%self.numStates]
-            reward = -np.sum((actions - self.recordedActions)**2) / self.action_space.shape[0]
-            done = False
-            if self.index % self.numSteps==0:
-                done=True
-            self.index+=1
-            newState = self.next_states[(self.index-1)%self.numStates]
+        high = np.ones([len(self.actions[0])])
+        self.action_space = gym.spaces.Box(-high, high)
+
+        self.index = 0
+
+    def seed(self,seedValue):
+        return
+
+    def reset(self):
+        self.index+=1
+        self.reward = 0.0
+        self.steps = 0
+        return self.states[(self.index-1)%self.numStates]
+        #,env.action_space.shape[0],100,0.25
+
+    def step(self,actions):
+        newState = self.next_states[(self.index-1)%self.numStates]
+        self.recordedActions = self.actions[(self.index-1)%self.numStates]
+        reward = -np.sum((actions - self.recordedActions)**2) / self.action_space.shape[0]
+        done = False
+        if self.steps==self.numSteps:
+            done=True
+        self.index+=1
+        self.steps+=1
+        self.reward+=reward*10.0
+        if done:
+            return newState, reward*10.0, done, {"reward":self.reward, "steps":self.steps-1}
+        else:
             return newState, reward*10.0, done, {}
+
+global samplesEnvData
+samplesEnvData={}
+def makeSamplesEnv(evvName):
+    return SamplesEnv(samplesEnvData)
+
 
 class DefaultRewardsShaper:
     def __init__(self, clip_value = 0, scale_value = 1, shift_value = 0):
@@ -216,6 +238,7 @@ def printNetwork(net):
 
 def main():
 
+    realEval = True #False
 
     gettrace = getattr(sys, 'gettrace', None)
     
@@ -255,13 +278,12 @@ def main():
         args.log_dir = "./logs/robot_d"
     args.num_env_steps = 1000000
     args.log_interval = 30
-    args.eval_interval = 2
     args.hidden_size =  64 
     args.last_hidden_size = args.hidden_size
     args.recurrent_policy = False #True
     args.save_interval = 20
     args.seed = 1
-
+    reward_shaping = 0.01
     allowMutate = True
 
 
@@ -308,15 +330,34 @@ def main():
         makeEnvFunction = make_env_multinetwork
 
     if trainType==9:
+        import pickle
+        realEval = False
         allowMutate = False
-        args.use_linear_lr_decay = False
-        #args.num_steps = 1024 #2048
-        #args.ppo_epoch  = 2
-        #args.num_mini_batch = 256
+        args.use_linear_lr_decay = True #False
+        args.num_env_steps = 5000000
+        #reward_shaping = 0.1
+        # from https://github.com/openai/baselines/issues/723
+        '''
+        args.num_steps = 4096
+        args.lr = 0.0001
+        args.num_mini_batch = 64
+        args.gae_lambda =0.95
+        args.gamma =0.99
+        args.ppo_epoch  = 10
+        args.clip_param = 0.3
+        '''
         filesNamesSuffix = "test_"
         makeEnvFunction = makeEnv.make_env_with_best_settings_for_test
+        '''
+        args.num_processes = 1
+        args.log_interval = 10
+        print ("Samples preload")
+        global samplesEnvData
+        samplesEnvData = pickle.load( open( "../QuadruppedWalk-v1.samples", "rb" ) )
+        makeEnvFunction = makeSamplesEnv
+        '''
 
-    reward_shaper = DefaultRewardsShaper(scale_value = 0.001)
+    reward_shaper = DefaultRewardsShaper(scale_value = reward_shaping)
 
     print("ActionType ",trainType," ",filesNamesSuffix)
 
@@ -565,9 +606,7 @@ def main():
     num_updates = int(args.num_env_steps) // args.num_steps // args.num_processes
     episodeBucketIndex = 0
 
-    realEval = True #False
-
-    maxReward = 0
+    maxReward = -10000000000
     numEval = 10
     if realEval:
         envEval = makeEnvFunction(args.env_name)
@@ -698,10 +737,14 @@ def main():
                     if len(episode_rewards) and np.mean(episode_rewards)>maxReward and j>args.log_interval:
                         if skipWriteBest==False:
                             maxReward = np.mean(episode_rewards)
-                            writer.add_scalar('reward/maxReward', evalReward, i_episode)
+                            writer.add_scalar('reward/maxReward', maxReward, i_episode)
 
                             bestFilename = os.path.join(save_path,"{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
-                            print("Writing best reward:",Fore.GREEN,"({:.1f}/{:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.median(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),Style.RESET_ALL,bestFilename)
+                            if len(episode_dist_to_target):
+                                print("Writing best reward:",Fore.GREEN,"({:.1f}/{:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.median(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),Style.RESET_ALL,bestFilename)
+                            else:
+                                print("Writing best reward:",Fore.GREEN,"({:.1f}/{:.1f}/{}) ".format(np.mean(episode_rewards),np.median(episode_rewards),np.mean(episode_steps)),Style.RESET_ALL,bestFilename)
+                            
                             torch.save([
                                 actor_critic,
                                 getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
@@ -804,13 +847,6 @@ def main():
                         dist_entropy, 
                         value_loss,
                         action_loss))
-        '''
-        if (args.eval_interval is not None and len(episode_rewards) > 1
-                and j % args.eval_interval == 0):
-            ob_rms = utils.get_vec_normalize(envs).ob_rms
-            evaluate(actor_critic, ob_rms, args.env_name, args.seed,
-                     args.num_processes, eval_log_dir, device)
-        '''
 
 if __name__ == "__main__":
     main()

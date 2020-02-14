@@ -104,7 +104,7 @@ def make_env_multinetwork(envName):
 # 4 walk tasks with analytica
 # 5 walk tasks with analytica2
 
-trainType = 10
+trainType = 11
 if args.action_type>=0:
     trainType = args.action_type
 filesNamesSuffix = ""
