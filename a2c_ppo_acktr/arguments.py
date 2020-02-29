@@ -114,7 +114,7 @@ def get_args(parser):
     parser.add_argument(
         '--num-env-steps',
         type=int,
-        default=10e6,
+        default=5000000,
         help='number of environment steps to train (default: 10e6)')
     parser.add_argument(
         '--env-name',

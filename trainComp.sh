@@ -1,6 +1,9 @@
 #!/bin/bash
 while :
 do
+  #zoo
+  #python3 main.py --action-type=10  
+  #sleep 10
   python3 main.py --action-type=4  
   sleep 10
   python3 main.py --action-type=5  

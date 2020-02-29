@@ -17,6 +17,8 @@ quadruppedEnv.settings.jointVelocities = 0
 quadruppedEnv.settings.history1Len = 0.0
 quadruppedEnv.settings.history2Len = 0.0
 quadruppedEnv.settings.history3Len = 0.0
+quadruppedEnv.settings.tasks_difficulty_from = 0
+quadruppedEnv.settings.tasks_difficulty_to = -1
 
 
 from colorama import Fore, Back, Style 
@@ -46,8 +48,9 @@ from tensorboardX import SummaryWriter
 
 from gym.envs.registration import register
 import glm
-
+import random
 from quadruppedEnv import makeEnv
+import time
 
 class PPOPlayer:
         def __init__(self,actor,device):
@@ -65,8 +68,9 @@ class PPOPlayer:
             return action
 
 # Runs policy for X episodes and returns average reward
-def evaluate_policy(env,policy, eval_episodes=10, render=False,device=None):
-    print ("---------------------------------------")
+def evaluate_policy(env,policy, eval_episodes=10, render=False,device=None,verbose=1):
+    if verbose>0:
+        print ("---------------------------------------")
     avg_reward = 0.
     policy.eval()
     for _ in range(eval_episodes):
@@ -89,7 +93,7 @@ def evaluate_policy(env,policy, eval_episodes=10, render=False,device=None):
             episode_reward+=reward
             episode_steps+=1
             avg_reward += reward
-            if done:
+            if done and verbose>0:
                 if len(info):
                     print(info)
                 else:
@@ -98,11 +102,13 @@ def evaluate_policy(env,policy, eval_episodes=10, render=False,device=None):
     avg_reward /= eval_episodes
 
     print ("Evaluation over %d episodes: %f" % (eval_episodes, avg_reward))
-    print ("---------------------------------------")
+    if verbose>0:
+        print ("---------------------------------------")
     return avg_reward
 
 
 import gym
+import math
 
 class SamplesEnv(gym.Env):
     def __init__(self,data):
@@ -120,31 +126,67 @@ class SamplesEnv(gym.Env):
         self.action_space = gym.spaces.Box(-high, high)
 
         self.index = 0
+        self.restartDataOnRestart = True #False
+        #self.actionMults = np.array([2.0,1.0,1.0,2.0,1.0,1.0,2.0,1.0,1.0,2.0,1.0,1.0])
+        self.aMin = np.array([
+            -0.398132,-1.22173,-glm.pi(),
+            -0.698132,-1.22173,-glm.pi(),
+            -0.398132,-1.22173,-glm.pi(),
+            -0.698132,-1.22173,-glm.pi()])
+        self.aMax = np.array([
+            0.698132,1.22173,0.0,
+            0.398132,1.22173,0.0,
+            0.698132,1.22173,0.0,
+            0.398132,1.22173,0.0])
+        self.limitsMiddle = (self.aMin+self.aMax)*0.5
+        self.limitsDiff = (self.aMax-self.aMin)
 
     def seed(self,seedValue):
         return
 
     def reset(self):
+        if self.restartDataOnRestart:
+            self.index = 0
         self.index+=1
         self.reward = 0.0
         self.steps = 0
+        self.degrees = 0
         return self.states[(self.index-1)%self.numStates]
         #,env.action_space.shape[0],100,0.25
 
     def step(self,actions):
         newState = self.next_states[(self.index-1)%self.numStates]
         self.recordedActions = self.actions[(self.index-1)%self.numStates]
-        reward = -np.sum((actions - self.recordedActions)**2) / self.action_space.shape[0]
+        #reward = -np.sum((actions - self.recordedActions)**2)
+
+        recAngles = 2 * (self.recordedActions - self.limitsMiddle) / self.limitsDiff
+
+        netAngles = 2 * (actions - self.limitsMiddle) / self.limitsDiff
+
+
+        absDiff = np.abs(recAngles - netAngles)
+        #stdDev = np.std(absDiff)
+        #minDiff = np.min(absDiff)
+        #maxDiff = np.max(absDiff)
+        diffMean2 = np.mean(absDiff**2)
+        diffMean = np.mean(absDiff)
+        diffDeg = glm.degrees(diffMean)
+        #rew = np.sum((actions - self.recordedActions)**2)
+        #/len(self.recordedActions)
+        reward = math.exp(-2.0*diffMean2)
+        #reward = math.exp(-2.0*np.sum((actions - self.recordedActions)**2))
+        reward*=10
         done = False
         if self.steps==self.numSteps:
             done=True
         self.index+=1
         self.steps+=1
-        self.reward+=reward*10.0
+        self.degrees+=diffDeg
+        self.reward+=reward
         if done:
-            return newState, reward*10.0, done, {"reward":self.reward, "steps":self.steps-1}
+            return newState, reward, done, {"reward":self.reward, "steps":self.steps-1, "avgDeg":self.degrees/self.steps}
         else:
-            return newState, reward*10.0, done, {}
+            return newState, reward, done, {}
 
 global samplesEnvData
 samplesEnvData={}
@@ -249,6 +291,35 @@ def main():
             default=-1,
             help='action type to play (default: -1)')
 
+    parser.add_argument(
+            '--tasks-difficulty-from',
+            type=int,
+            default=0,
+            help='tasks_difficulty_from')
+
+    parser.add_argument(
+            '--tasks-difficulty-to',
+            type=int,
+            default=100000,
+            help='tasks-difficulty-to')
+
+    parser.add_argument(
+            '--verboseLevel',
+            type=int,
+            default=5,
+            help='verboseLevel')
+
+    parser.add_argument(
+            '--filesNamesSuffix',
+            default="",
+            help='filesNamesSuffix')
+
+    parser.add_argument(
+            '--nobest-exit',
+            type=int,
+            default=10000,
+            help='nobest_exit')
+
     args = get_args(parser)
 
     args.algo = 'ppo'
@@ -267,7 +338,7 @@ def main():
     args.gamma =0.99
     args.gae_lambda =0.95
     args.clip_param = 0.2
-    args.use_linear_lr_decay = True #True #True #True
+    args.use_linear_lr_decay = True #True #True #True #True
     args.use_proper_time_limits = True
     args.save_dir = "./trained_models/"+args.env_name+"/"
     args.load_dir  = "./trained_models/"+args.env_name+"/"
@@ -276,22 +347,26 @@ def main():
         args.save_dir = "./trained_models/"+args.env_name+"debug/"
         args.load_dir  = "./trained_models/"+args.env_name+"debug/"
         args.log_dir = "./logs/robot_d"
-    args.num_env_steps = 1000000
     args.log_interval = 30
     args.hidden_size =  64 
     args.last_hidden_size = args.hidden_size
     args.recurrent_policy = False #True
     args.save_interval = 20
-    args.seed = 1
+    #args.seed = 1
     reward_shaping = 0.01
-    allowMutate = True
+    allowMutate = False
 
+    if args.seed==-1:
+        args.seed = time.clock_gettime_ns(time.CLOCK_REALTIME)
+
+    quadruppedEnv.settings.tasks_difficulty_from = args.tasks_difficulty_from
+    quadruppedEnv.settings.tasks_difficulty_to = args.tasks_difficulty_to
 
     # 0 is a walk
     # 1 is a balance
     # 2 multitasks
     # 3 multitask experiments
-    trainType = 9
+    trainType = 14
     filesNamesSuffix = ""
     if args.action_type>=0:
         trainType = args.action_type
@@ -335,34 +410,103 @@ def main():
         allowMutate = False
         args.use_linear_lr_decay = True #False
         args.num_env_steps = 5000000
-        #reward_shaping = 0.1
-        # from https://github.com/openai/baselines/issues/723
-        '''
-        args.num_steps = 4096
-        args.lr = 0.0001
-        args.num_mini_batch = 64
-        args.gae_lambda =0.95
-        args.gamma =0.99
-        args.ppo_epoch  = 10
-        args.clip_param = 0.3
-        '''
         filesNamesSuffix = "test_"
         makeEnvFunction = makeEnv.make_env_with_best_settings_for_test
-        '''
-        args.num_processes = 1
-        args.log_interval = 10
+
+    if trainType==10:
+        import pickle
+        realEval = False
+        allowMutate = False
+        args.use_linear_lr_decay = True #False
+        args.num_env_steps = 5000000
+        filesNamesSuffix = "zoo_"
+        makeEnvFunction = makeEnv.make_env_with_best_settings_for_test_zoo
+
+    if trainType==11:
+        args.hidden_size = 128 #64 #128 
+        args.last_hidden_size = args.hidden_size
+
+        import pickle
+        if gettrace():
+            args.num_processes = 1
+        else:
+            args.num_processes = 8
+        realEval = False
+        allowMutate = False
+        args.lr = 0.00001
+        args.use_linear_lr_decay = True #False
+        args.num_env_steps = 10000000
+        filesNamesSuffix = "zigote2_updown_"
         print ("Samples preload")
         global samplesEnvData
-        samplesEnvData = pickle.load( open( "../QuadruppedWalk-v1.samples", "rb" ) )
+        samplesEnvData = pickle.load( open( "./QuadruppedWalk-v1_MoveNoPhys.samples", "rb" ) )
+       # samplesEnvData = pickle.load( open( "./QuadruppedWalk-v1.samples", "rb" ) )
         makeEnvFunction = makeSamplesEnv
+
+    if trainType==12:
+        import pickle
+        args.lr = 0.00001
+        args.hidden_size =  64 
+        args.last_hidden_size = args.hidden_size
+        filesNamesSuffix = "zigote2_front_back_"
+        args.clip_param = 0.9
+        args.value_loss_coef  =0.9
+        makeEnvFunction = makeEnv.make_env_with_best_settings_for_train
+        #makeEnvFunction = makeEnv.make_env_with_best_settings_for_record
+        #makeEnv.samplesEnvData = pickle.load( open( "./QuadruppedWalk-v1_MoveNoPhys.samples", "rb" ) )
+
+    if trainType==13:
+        filesNamesSuffix = "all_bytasks_"
+        makeEnvFunction = makeEnv.make_env_with_best_settings_for_all
+
+    if trainType==14:
+        #args.lr = 0.00001
+        #args.num_env_steps = 000000
+        #args.clip_param = 0.5
+        #args.value_loss_coef  =0.8
+        #random.seed(time.clock_gettime_ns(time.CLOCK_REALTIME))
+        #args.num_steps = random.choice([256,512,1024,2048,4096])
+        #args.num_mini_batch = random.choice([32,64,256,512])
+        #args.ppo_epoch  = random.choice([2,4,8,10])
+        #args.clip_param = random.choice([0.2,0.4,0.6,0.8])
+        #args.value_loss_coef  =random.choice([0.4,0.5,0.6,0.8])
+        #args.lr = random.choice([0.00001,0.0001,0.00005,0.0005]) 
+        
+        args.num_steps = 2048
+        args.num_mini_batch = 64
+        args.ppo_epoch  = 8
+        args.lr = 0.0001
+
+        args.hidden_size =  64 
+        args.last_hidden_size = args.hidden_size
+        #
+        filesNamesSuffix = args.filesNamesSuffix
+        makeEnvFunction = makeEnv.make_env_with_best_settings_for_all
         '''
+        num_steps: 1024 num_mini_batch 64 ppo_epoch 2
+        clip_param: 0.2 value_loss_coef 0.6 lr 0.0001
+        '''
+
+    if trainType==15:
+        args.num_env_steps = 5000000
+        filesNamesSuffix = "zigote_updown_"
+        makeEnvFunction = makeEnv.make_env_with_best_settings_for_train_analytic
+
+    if trainType==16:
+        args.lr = 0.00001
+        filesNamesSuffix = "compound_tasks_"
+        makeEnvFunction = make_env_multinetwork
 
     reward_shaper = DefaultRewardsShaper(scale_value = reward_shaping)
 
-    print("ActionType ",trainType," ",filesNamesSuffix)
+    print("ActionType ",trainType," ",filesNamesSuffix, "seed", args.seed, "num env steps:",args.num_env_steps," tasks_dif", args.tasks_difficulty_from,args.tasks_difficulty_to)
 
     print("Num processes:", args.num_processes)
 
+    print("num_steps:", args.num_steps,"num_mini_batch",args.num_mini_batch,"ppo_epoch",args.ppo_epoch)
+    print("clip_param:", args.clip_param,"value_loss_coef",args.value_loss_coef,"lr",args.lr)
+
+    random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
@@ -374,6 +518,15 @@ def main():
     #TesnorboardX
     writer = SummaryWriter(log_dir=args.log_dir+'runs/{}_PPO_{}_{}'.format(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"), args.env_name,
                             "ppo"))
+
+    writer.add_scalar('options/num_steps', args.num_steps, 0)
+    writer.add_scalar('options/num_mini_batch', args.num_mini_batch, 0)
+    writer.add_scalar('options/ppo_epoch', args.ppo_epoch, 0)
+    writer.add_scalar('options/clip_param', args.clip_param, 0)
+    writer.add_scalar('options/value_loss_coef', args.value_loss_coef, 0)
+    writer.add_scalar('options/lr', args.lr, 0)
+
+
 
     device = torch.device("cuda:0" if args.cuda else "cpu")
     torch.set_num_threads(1)
@@ -393,7 +546,27 @@ def main():
             policies.append(PPOPlayer(ac,device))
             print("Policy multi loaded: ",bestFilename)
 
-
+    multiNetworkName2 = [
+        "all_bytasks_0_",
+        "all_bytasks_1_",
+        "all_bytasks_2_",
+        "all_bytasks_3_",
+        "all_bytasks_4_",
+        "all_bytasks_5_",
+        "all_bytasks_6_",
+        "all_bytasks_7_",
+        "all_bytasks_8_",
+        "all_bytasks_9_",
+        "all_bytasks_10_",
+        "all_bytasks_11_",
+        "all_bytasks_12_",
+    ]
+    if trainType==16:
+        for net in multiNetworkName2:
+            bestFilename = os.path.join(load_dir,"{}_{}{}_best.pt".format(args.env_name,net,args.hidden_size))
+            ac,_ = torch.load(bestFilename)
+            policies.append(PPOPlayer(ac,device))
+            print("Policy multi loaded: ",bestFilename)
 
     envs = make_vec_envs(
                         args.env_name,
@@ -429,13 +602,13 @@ def main():
     if os.path.isfile(load_path) and not loadPretrained:
         actor_critic, ob_rms = torch.load(load_path)
         actor_critic.eval()
-        print("NN loaded: ",load_path)
+        print("----NN loaded: ",load_path," -----")
     else:
         bestFilename = os.path.join(load_dir,"{}_{}{}_best_pretrain.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
         if os.path.isfile(bestFilename):
             actor_critic, ob_rms = torch.load(bestFilename)
             actor_critic.eval()
-            print("NN loaded: ",bestFilename)
+            print("----NN loaded: ",bestFilename," -----")
 
 
     maxReward = -10000.0
@@ -517,12 +690,13 @@ def main():
     except OSError:
         pass
 
-    trainOnSamplesAndExit = False
+    trainOnSamplesAndExit = False #False
     if trainOnSamplesAndExit:
         import pickle
         print ("---------------------------------------")
         print ("Samples preload")
-        data = pickle.load( open( "../QuadruppedWalk-v1.samples", "rb" ) )
+        data = pickle.load( open( "./QuadruppedWalk-v1_UpDown.samples", "rb" ) )
+        #data = pickle.load( open( "../QuadruppedWalk-v1_NN.samples", "rb" ) )
 
         learning_rate = 0.0001
         max_episodes = 100
@@ -575,8 +749,9 @@ def main():
                 if done:
                     if epoch % log_interval == 0:
                         #print(best_action_t*scaleActions-net_out*scaleActions)
-                        print('Train Episode: {} t:{} Reward:{} Loss: mean:{:.6f} max: {:.6f}'.format(epoch, t,testReward,loss_sum/t,loss_max))
-                        print(info)
+                        if args.verboseLevel>0:
+                            print('Train Episode: {} t:{} Reward:{} Loss: mean:{:.6f} max: {:.6f}'.format(epoch, t,testReward,loss_sum/t,loss_max))
+                            print(info)
                         reward = 0
                     break
         bestFilename = os.path.join(save_path,"{}_{}{}_best_pretrain.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
@@ -589,7 +764,8 @@ def main():
 
     skipWriteBest = True
 
-    printNetwork(actor_critic.base.actor)
+    if args.verboseLevel>0:
+        printNetwork(actor_critic.base.actor)
 
     lock(actor_critic,first=False,last=False)
     #if trainType==9:
@@ -597,7 +773,8 @@ def main():
         #lock(actor_critic,first=True,last=False)
         #mutate(actor_critic,power=0.00,powerLast=0.3)
 
-    printNetwork(actor_critic.base.actor)
+    if args.verboseLevel>0:
+        printNetwork(actor_critic.base.actor)
     #from torchsummary import summary
 
     #summary(actor_critic.base.actor, (1, 48, 64))
@@ -612,10 +789,12 @@ def main():
         envEval = makeEnvFunction(args.env_name)
         if hasattr(envEval.env,"tasks") and len(envEval.env.tasks):
             numEval = max(numEval,len(envEval.env.tasks))
-        maxReward = evaluate_policy(envEval,actor_critic,numEval*2,render=False,device=device)
+        maxReward = evaluate_policy(envEval,actor_critic,numEval*2,render=False,device=device,verbose=args.verboseLevel)
+        print("MaxReward on start",maxReward)
 
     noMaxRewardCount = 0
 
+    updateIndex = 0
 
     for j in range(num_updates):
 
@@ -640,11 +819,12 @@ def main():
 
             #envs.venv.venv.venv.envs[0].render()
 
-            index = 0
-            for d in done:
-                if d:
-                    print(infos[index],flush=True)
-                index+=1
+            if args.verboseLevel>0:
+                index = 0
+                for d in done:
+                    if d:
+                        print(infos[index],flush=True)
+                    index+=1
 
             episodeDone = False
 
@@ -689,15 +869,16 @@ def main():
 
             if episodeDone:
                 episodeBucketIndex+=1
-                print("Mean:",Fore.WHITE,np.mean(episode_rewards),Style.RESET_ALL," Median:",Fore.WHITE,np.median(episode_rewards),Style.RESET_ALL," max reward:", maxReward)
+                if args.verboseLevel>0:
+                    print("Mean:",Fore.WHITE,np.mean(episode_rewards),Style.RESET_ALL," Median:",Fore.WHITE,np.median(episode_rewards),Style.RESET_ALL," max reward:", maxReward)
 
                 #'''len(episode_rewards) and np.mean(episode_rewards)>maxReward and''' 
                 if realEval:
                     if episodeBucketIndex % args.log_interval == 0 and  episodeBucketIndex>args.log_interval:
                         print("Step:",(j + 1) * args.num_processes * args.num_steps)
                         if skipWriteBest==False:
-                            evalReward = evaluate_policy(envEval,actor_critic,numEval,device=device)
-        
+                            evalReward = evaluate_policy(envEval,actor_critic,numEval,device=device,verbose = args.verboseLevel)
+
                             writer.add_scalar('reward/eval', evalReward, i_episode)
         
                             if evalReward>maxReward:
@@ -705,7 +886,7 @@ def main():
                                 #maxReward = np.mean(episode_rewards)
 
                                 bestFilename = os.path.join(save_path,"{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
-                                print("Writing best reward:",Fore.GREEN,"({:.1f}/{:.1f}/{}/{:.2f}) ".format(np.mean(episode_rewards),np.median(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),Style.RESET_ALL,bestFilename)
+                                print("Writing best reward:",Fore.GREEN,"({:.1f}/{:.1f}/{:.1f}/{}/{:.2f}) ".format(maxReward,np.mean(episode_rewards),np.median(episode_rewards),np.mean(episode_steps),episode_dist_to_target[-1]),Style.RESET_ALL,bestFilename)
                                 torch.save([
                                     actor_critic,
                                     getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
@@ -731,6 +912,8 @@ def main():
                                         lock(actor_critic,first=False,last=False)
                                         mutate(actor_critic,power=0.03,powerLast=0.03)
                                         noMaxRewardCount = 0
+                                if noMaxRewardCount==args.nobest_exit:
+                                    exit(0) 
                         else:
                             skipWriteBest = False
                 else:
@@ -787,11 +970,17 @@ def main():
 
         value_loss, action_loss, dist_entropy = agent.update(rollouts)
 
+        writer.add_scalar('reward/value_loss', value_loss, updateIndex)
+        writer.add_scalar('reward/action_loss', action_loss, updateIndex)
+        writer.add_scalar('reward/dist_entropy', dist_entropy, updateIndex)
+
+        updateIndex+=1
+
         rollouts.after_update()
 
         # save for every interval-th episode or for the last epoch
         if (j % args.save_interval == 0 or j == num_updates - 1) and args.save_dir != "":
-
+            '''
             fileName = os.path.join(save_path, "{}_{}{}.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
             torch.save([
                 actor_critic,
@@ -802,51 +991,52 @@ def main():
             fileName = os.path.join(save_path, "{}_{}{}_actor.pt".format(args.env_name,filesNamesSuffix,args.hidden_size))
             torch.save(actor_critic.state_dict, fileName)
             print("Saved:",fileName)
-
+            '''
         if j % args.log_interval == 0 and len(episode_rewards) > 1:
             total_num_steps = (j + 1) * args.num_processes * args.num_steps
             end = time.time()
-            print("")
-            print("Updates {}, num timesteps {}, FPS {}".format(j, total_num_steps,
-                        int(total_num_steps / (end - start))))
-            print(" Last {} training episodes:".format(
-                        len(episode_rewards)))
+            if args.verboseLevel>0:
+                print("")
+                print("Updates {}, num timesteps {}, FPS {}".format(j, total_num_steps,
+                            int(total_num_steps / (end - start))))
+                print(" Last {} training episodes:".format(
+                            len(episode_rewards)))
 
-            print(" reward mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                        np.mean(episode_rewards),np.median(episode_rewards),
-                        np.min(episode_rewards),np.max(episode_rewards)))
+                print(" reward mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
+                            np.mean(episode_rewards),np.median(episode_rewards),
+                            np.min(episode_rewards),np.max(episode_rewards)))
 
-            print(" steps mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                        np.mean(episode_steps),np.median(episode_steps),
-                        np.min(episode_steps),np.max(episode_steps)))
+                print(" steps mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
+                            np.mean(episode_steps),np.median(episode_steps),
+                            np.min(episode_steps),np.max(episode_steps)))
 
-            if len(episode_rewards_alive):
-                print(" alive mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                            np.mean(episode_rewards_alive),np.median(episode_rewards_alive),
-                            np.min(episode_rewards_alive),np.max(episode_rewards_alive)))
+                if len(episode_rewards_alive):
+                    print(" alive mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
+                                np.mean(episode_rewards_alive),np.median(episode_rewards_alive),
+                                np.min(episode_rewards_alive),np.max(episode_rewards_alive)))
 
-            if len(episode_rewards_progress):
-                print(" progress mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                            np.mean(episode_rewards_progress),np.median(episode_rewards_progress),
-                            np.min(episode_rewards_progress),np.max(episode_rewards_progress)))
+                if len(episode_rewards_progress):
+                    print(" progress mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
+                                np.mean(episode_rewards_progress),np.median(episode_rewards_progress),
+                                np.min(episode_rewards_progress),np.max(episode_rewards_progress)))
 
-            if len(episode_rewards_servo):
-                print(" servo mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                            np.mean(episode_rewards_servo),np.median(episode_rewards_servo),
-                            np.min(episode_rewards_servo),np.max(episode_rewards_servo)))
+                if len(episode_rewards_servo):
+                    print(" servo mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
+                                np.mean(episode_rewards_servo),np.median(episode_rewards_servo),
+                                np.min(episode_rewards_servo),np.max(episode_rewards_servo)))
 
-            if len(episode_dist_to_target):
-                print(" dist to target mean/median {:.3f}/{:.3f} min/max {:.3f}/{:.3f}".format(
-                                np.mean(episode_dist_to_target),np.median(episode_dist_to_target),
-                                np.min(episode_dist_to_target),np.max(episode_dist_to_target)))
+                if len(episode_dist_to_target):
+                    print(" dist to target mean/median {:.3f}/{:.3f} min/max {:.3f}/{:.3f}".format(
+                                    np.mean(episode_dist_to_target),np.median(episode_dist_to_target),
+                                    np.min(episode_dist_to_target),np.max(episode_dist_to_target)))
 
-            print(" Reward/Steps {:.3f} Progress/Steps: {:.3f} entropy {:.1f} value_loss {:.5f} action_loss {:.5f}\n"
-                .format(
-                        np.mean(episode_rewards)/np.mean(episode_steps),
-                        (0 if len(episode_rewards_progress)==0 else np.mean(episode_rewards_progress)/np.mean(episode_steps)),
-                        dist_entropy, 
-                        value_loss,
-                        action_loss))
+                print(" Reward/Steps {:.3f} Progress/Steps: {:.3f} entropy {:.1f} value_loss {:.5f} action_loss {:.5f}\n"
+                    .format(
+                            np.mean(episode_rewards)/np.mean(episode_steps),
+                            (0 if len(episode_rewards_progress)==0 else np.mean(episode_rewards_progress)/np.mean(episode_steps)),
+                            dist_entropy, 
+                            value_loss,
+                            action_loss))
 
 if __name__ == "__main__":
     main()

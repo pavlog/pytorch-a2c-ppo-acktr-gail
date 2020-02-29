@@ -30,6 +30,7 @@ import torch.optim as optim
 import numpy as np
 import torch
 import glm
+import pickle
 
 from a2c_ppo_acktr.envs import VecPyTorch, make_vec_envs
 from a2c_ppo_acktr.utils import get_render_func, get_vec_normalize
@@ -104,7 +105,10 @@ def make_env_multinetwork(envName):
 # 4 walk tasks with analytica
 # 5 walk tasks with analytica2
 
-trainType = 11
+hidden_size = 64
+
+
+trainType = 19
 if args.action_type>=0:
     trainType = args.action_type
 filesNamesSuffix = ""
@@ -140,10 +144,72 @@ if trainType==10:
     from main import PPOPlayer
     filesNamesSuffix = "compound_"
     makeEnvFunction = make_env_multinetwork
+    quadruppedEnv.settings.tasks_difficulty_from = 11
+    quadruppedEnv.settings.tasks_difficulty_to = 11
 
 if trainType==11:
     filesNamesSuffix = "test_"
+    #makeEnvFunction = makeEnv.make_env_with_best_settings_for_test
     makeEnvFunction = makeEnv.make_env_with_best_settings_for_test
+
+if trainType==12:
+    filesNamesSuffix = "zoo_"
+    #makeEnvFunction = makeEnv.make_env_with_best_settings_for_test
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_test_zoo
+
+if trainType==13:
+    hidden_size = 128
+    filesNamesSuffix = "zigote_"
+    #makeEnvFunction = makeEnv.make_env_with_best_settings_for_test
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_zigote_front_back
+
+if trainType==14:
+    hidden_size = 64
+    filesNamesSuffix = "zigote2_front_back_"
+    #makeEnvFunction = makeEnv.make_env_with_best_settings_for_test
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_train
+    #makeEnvFunction = makeEnv.make_env_with_best_settings_for_record
+    #makeEnv.samplesEnvData = pickle.load( open( "./QuadruppedWalk-v1_MoveNoPhys.samples", "rb" ) )
+
+
+if trainType==15:
+    filesNamesSuffix = "all_bytasks_11_"
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_all
+    quadruppedEnv.settings.tasks_difficulty_from = 11
+    quadruppedEnv.settings.tasks_difficulty_to = 11
+
+    #filesNamesSuffix = "all_bytasks_1_"
+    #makeEnvFunction = makeEnv.make_env_with_best_settings_for_all
+    #quadruppedEnv.settings.tasks_difficulty_from = 1
+    #quadruppedEnv.settings.tasks_difficulty_to = 1
+
+if trainType==16:
+    filesNamesSuffix = "zigote_updown_"
+    #filesNamesSuffix = "test_"
+    #makeEnvFunction = makeEnv.make_env_with_best_settings_for_test
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_train_analytic
+    quadruppedEnv.settings.tasks_difficulty_from = 11
+    quadruppedEnv.settings.tasks_difficulty_to = 11
+
+if trainType==17:
+    from main import PPOPlayer
+    filesNamesSuffix = "compound_tasks_"
+    makeEnvFunction = make_env_multinetwork
+    quadruppedEnv.settings.tasks_difficulty_from = 11
+    quadruppedEnv.settings.tasks_difficulty_to = 11
+
+if trainType==18:
+    import pickle
+    filesNamesSuffix = "zigote2_updown_"
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_record
+    hidden_size = 128
+
+if trainType==19:
+    hidden_size = 64
+    filesNamesSuffix = "all_bytasks_13_"
+    makeEnvFunction = makeEnv.make_env_with_best_settings_for_all
+    quadruppedEnv.settings.tasks_difficulty_from = 11
+    quadruppedEnv.settings.tasks_difficulty_to = 11
 
 args.env_name = "QuadruppedWalk-v1" #'RoboschoolAnt-v1' #"QuadruppedWalk-v1" #'RoboschoolAnt-v1' # "QuadruppedWalk-v1"
 #args.load_dir = "./trained_models/"+args.env_name+"/ppo copy 4/"
@@ -151,7 +217,6 @@ args.load_dir = "./trained_models/"+args.env_name+"/ppo/"
 #args.load_dir = "./trained_models/"+args.env_name+"/ppo copy 3/"
 #args.use_proper_time_limits = True
 
-hidden_size = 64
 
 device = torch.device("cpu")
 
@@ -170,9 +235,35 @@ if trainType==10:
         policies.append(PPOPlayer(ac,device))
         print("Policy multi loaded: ",bestFilename)
 
+if trainType==17:
+    multiNetworkName = [
+        "all_bytasks_0_",
+        "all_bytasks_1_",
+        "all_bytasks_2_",
+        "all_bytasks_3_",
+        "all_bytasks_4_",
+        "all_bytasks_5_",
+        "all_bytasks_6_",
+        "all_bytasks_7_",
+        "all_bytasks_8_",
+        "all_bytasks_9_",
+        "all_bytasks_10_",
+        "all_bytasks_11_",
+        "all_bytasks_12_",
+    ]
+    policies = []
+    for net in multiNetworkName:
+        bestFilename = os.path.join(args.load_dir,"{}_{}{}_best.pt".format(args.env_name,net,hidden_size))
+        ac,_ = torch.load(bestFilename)
+        policies.append(PPOPlayer(ac,device))
+        print("Policy multi loaded: ",bestFilename)
 
 env = makeEnvFunction(args.env_name)
 
+if trainType==18:
+    #env.env.env.env.bodyFixedPos = True
+    #env.env.env.env.gravity=0.000000
+    TEMP = 0
 
 loadFilename = os.path.join(args.load_dir, "{}_{}{}.pt".format(args.env_name,filesNamesSuffix,hidden_size))
 loadFilename = os.path.join(args.load_dir, "{}_{}{}_best.pt".format(args.env_name,filesNamesSuffix,hidden_size))
@@ -186,8 +277,6 @@ loadFilename = os.path.join(args.load_dir, "{}_{}{}_best.pt".format(args.env_nam
 
 #recurrent_hidden_states = torch.zeros(1,actor_critic.recurrent_hidden_state_size)
 #masks = torch.zeros(1, 1)
-
-obs = env.reset()
 
 env.spec.max_episode_steps = min(args.num_steps,env.spec.max_episode_steps)
 
@@ -262,6 +351,9 @@ def evaluate_policy(env,policy, eval_episodes=10, render=False,device=None):
             inputs, recurrent_hidden_states, masks)
             #obs = torch.FloatTensor((obs).reshape(1, -1)).to(device)
 
+            #actions = samplesEnvData["action"]
+            #action = actions[episode_steps]
+            #obs, reward, done, info = env.step(action)
             if render:
                 env.render()
             obs, reward, done, info = env.step(action[0].detach().numpy())
@@ -288,85 +380,3 @@ while True:
     actor_critic.eval()
 
     evaluate_policy(env,actor_critic,100,True,device)
-
-'''
-    continue
-
-    recurrent_hidden_states = torch.zeros(1,
-                                      actor_critic.recurrent_hidden_state_size)
-    masks = torch.zeros(1, 1)
-
-
-    obs = env.reset()
-
-    while True:
-        with torch.no_grad():
-
-            #recurrent_hidden_states = torch.zeros(1,
-            #                                actor_critic.recurrent_hidden_state_size)
-            inputs = torch.FloatTensor(obs.reshape(1, -1)).to(device)
-            value, action, _, recurrent_hidden_states = actor_critic.act(
-            inputs, recurrent_hidden_states, masks, deterministic=args.det)
-            #action = actor_critic.getActionsOnly(inputs)
-
-        #print(inputs)
-
-        # Obser reward and next obs
-        #print(action[0])
-        obs, reward, done, infos = env.step(action[0].data.numpy())
-        episode_reward+=reward
-        cur_episode_steps+=1
-
-        masks.fill_(0.0 if done else 1.0)
-
-        if done:
-
-            episode_rewards.append(episode_reward)
-            episode_steps.append(cur_episode_steps)
-            for info in infos:
-                if 'alive' in info:
-                    episode_rewards_alive.append(infos['alive'])
-                if 'progress' in info:
-                    episode_rewards_progress.append(infos['progress'])
-                if 'servo' in info:
-                    episode_rewards_servo.append(infos['servo'])
-                if 'distToTarget' in info:
-                    episode_dist_to_target.append(infos['distToTarget'])
-            episode_reward = 0
-            cur_episode_steps = 0
-
-        env.render()
-
-        if done:
-            print(Fore.WHITE,infos)
-            print(Style.RESET_ALL) 
-            print(" reward mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                        np.mean(episode_rewards),np.median(episode_rewards),
-                        np.min(episode_rewards),np.max(episode_rewards)))
-
-            print(" steps mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                        np.mean(episode_steps),np.median(episode_steps),
-                        np.min(episode_steps),np.max(episode_steps)))
-
-            print(" alive mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                        np.mean(episode_rewards_alive),np.median(episode_rewards_alive),
-                        np.min(episode_rewards_alive),np.max(episode_rewards_alive)))
-
-            print(" progress mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                        np.mean(episode_rewards_progress),np.median(episode_rewards_progress),
-                        np.min(episode_rewards_progress),np.max(episode_rewards_progress)))
-
-            print(" servo mean/median {:.1f}/{:.1f} min/max {:.1f}/{:.1f}".format(
-                        np.mean(episode_rewards_servo),np.median(episode_rewards_servo),
-                        np.min(episode_rewards_servo),np.max(episode_rewards_servo)))
-
-            print(" dist to target mean/median {:.3f}/{:.3f} min/max {:.3f}/{:.3f}".format(
-                        np.mean(episode_dist_to_target),np.median(episode_dist_to_target),
-                        np.min(episode_dist_to_target),np.max(episode_dist_to_target)))
-
-            print(" Reward/Steps {:.3f} Energy/Steps: {:.3f}\n"
-                .format(
-                        np.mean(episode_rewards)/np.mean(episode_steps),
-                        np.mean(episode_rewards_servo)/np.mean(episode_steps)))
-            break
-'''
